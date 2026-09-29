@@ -1,38 +1,35 @@
-# 二开推荐阅读[如何提高项目构建效率](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/scene/build/speed.html)
-# 选择构建用基础镜像（选择原则：在包含所有用到的依赖前提下尽可能体积小）。如需更换，请到[dockerhub官方仓库](https://hub.docker.com/_/python?tab=tags)自行选择后替换。
-# 已知alpine镜像与pytorch有兼容性问题会导致构建失败，如需使用pytorch请务必按需更换基础镜像。
-FROM alpine:3.13
+# ---------- 微信云托管 · Django（生产可用） ----------
+# 官方模板用的是 alpine:3.13 + python3（3.7）+ `manage.py runserver`，
+# runserver 是单线程开发服务器，不能上生产；这里换成 python:3.11-slim + gunicorn。
 
-# 容器默认时区为UTC，如需使用上海时间请启用以下时区设置命令
-# RUN apk add tzdata && cp /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && echo Asia/Shanghai > /etc/timezone
+FROM python:3.11-slim
 
-# 使用 HTTPS 协议访问容器云调用证书安装
-RUN apk add ca-certificates
+# 云托管容器默认 UTC，日志时间会差 8 小时
+ENV TZ=Asia/Shanghai \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
-# 选用国内镜像源以提高下载速度
-RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.tencent.com/g' /etc/apk/repositories \
-&& apk add --update --no-cache python3 py3-pip \
-&& rm -rf /var/cache/apk/*
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends tzdata ca-certificates \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
 
-# 拷贝当前项目到/app目录下(.dockerignore中文件除外)
-COPY . /app
-
-# 设定当前的工作目录
 WORKDIR /app
 
-# 安装依赖到指定的/install文件夹
-# 选用国内镜像源以提高下载速度
-RUN pip config set global.index-url http://mirrors.cloud.tencent.com/pypi/simple \
-&& pip config set global.trusted-host mirrors.cloud.tencent.com \
-&& pip install --upgrade pip \
-# pip install scipy 等数学包失败，可使用 apk add py3-scipy 进行， 参考安装 https://pkgs.alpinelinux.org/packages?name=py3-scipy&branch=v3.13
-&& pip install --user -r requirements.txt
+# 先装依赖，最大化利用构建缓存
+COPY requirements.txt .
+RUN pip config set global.index-url https://mirrors.cloud.tencent.com/pypi/simple \
+    && pip config set global.trusted-host mirrors.cloud.tencent.com \
+    && pip install --no-cache-dir -r requirements.txt
 
-# 暴露端口
-# 此处端口必须与「服务设置」-「流水线」以及「手动上传代码包」部署时填写的端口一致，否则会部署失败。
+COPY . .
+
+# 端口必须与控制台「服务设置 / 发布时」填写的端口完全一致，否则 Readiness probe failed
 EXPOSE 80
 
-# 执行启动命令
-# 写多行独立的CMD命令是错误写法！只有最后一行CMD命令会被执行，之前的都会被忽略，导致业务报错。
-# 请参考[Docker官方文档之CMD命令](https://docs.docker.com/engine/reference/builder/#cmd)
-CMD ["python3", "manage.py", "runserver", "0.0.0.0:80"]
+# 单行 CMD：写多行独立 CMD 只有最后一行会执行（官方 FAQ 明确列为常见错误）。
+# --fake-initial：模板部署路径下 Counters 表已由 container.config.json 的
+#   executeSQLs 建好，Django 需要识别并跳过，否则会报「表已存在」导致启动失败。
+# --timeout 55 < 平台 60s 上限；真正的长任务（大模型改写）在后台线程里跑，
+#   由 /api/task/<id> 轮询取结果，所以不会撞上这个超时。
+CMD ["sh", "-c", "python manage.py migrate --noinput --fake-initial && gunicorn wxcloudrun.wsgi:application -b 0.0.0.0:80 -w 2 -k gthread --threads 4 --timeout 55 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile -"]

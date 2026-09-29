@@ -1,0 +1,22 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/result/result",
+    "pages/history/history",
+    "pages/about/about"
+  ],
+  "window": {
+    "navigationBarTitleText": "去 AI 味",
+    "navigationBarBackgroundColor": "#14453D",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#F4F6F5",
+    "backgroundTextStyle": "dark",
+    "enablePullDownRefresh": false
+  },
+  "networkTimeout": {
+    "request": 60000
+  },
+  "style": "v2",
+  "sitemapLocation": "sitemap.json",
+  "lazyCodeLoading": "requiredComponents"
+}

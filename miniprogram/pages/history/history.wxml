@@ -1,0 +1,29 @@
+<!-- pages/history/history.wxml -->
+<view class="page page-bottom">
+
+  <view class="hd">
+    <view class="hd-title">历史记录</view>
+    <view class="hd-sub">最近 {{list.length}} / {{limit}} 条 · 只存在这台手机上</view>
+  </view>
+
+  <view class="card item" wx:for="{{list}}" wx:key="key" data-id="{{item.id}}" bindtap="onOpen" hover-class="item-hover">
+    <view class="score-badge {{item.levelChip}}">{{item.score}}</view>
+    <view class="item-main">
+      <view class="item-summary">{{item.summary}}</view>
+      <view class="item-meta">{{item.timeText}} · {{item.modeText}} · {{item.charCount}} 字<text wx:if="{{item.hasLlm}}"> · 有 AI 版</text></view>
+    </view>
+    <view class="item-del" data-id="{{item.id}}" catchtap="onDelete">删</view>
+  </view>
+
+  <view class="empty-box" wx:if="{{empty}}">
+    <view class="empty-title">还没有记录</view>
+    <view class="empty-sub">回首页粘贴一段文字改写，结果会自动存到这里。</view>
+    <view class="gap-16"></view>
+    <button class="btn btn-primary" bindtap="onBackHome">去改写一段</button>
+  </view>
+
+  <view class="clear-wrap" wx:if="{{!empty}}">
+    <button class="btn btn-line" bindtap="onClearAll">清空全部</button>
+  </view>
+
+</view>

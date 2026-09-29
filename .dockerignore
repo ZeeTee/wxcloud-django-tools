@@ -1,5 +1,24 @@
+# 构建镜像时不需要打进去的东西
 .git
 .dockerignore
 container.config.json
 LICENSE
 README.md
+.env
+.env.example
+
+# 小程序前端与本地脚本不进后端镜像
+miniprogram/
+scripts/
+tests/
+docs/
+
+# 本地产物
+__pycache__/
+*.py[cod]
+*.sqlite3
+data/
+logs/
+.venv/
+venv/
+staticfiles/

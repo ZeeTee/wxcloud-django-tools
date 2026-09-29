@@ -1,124 +1,268 @@
-# wxcloudrun-django
-[![GitHub license](https://img.shields.io/github/license/WeixinCloud/wxcloudrun-express)](https://github.com/WeixinCloud/wxcloudrun-express)
-![GitHub package.json dependency version (prod)](https://img.shields.io/badge/python-3.7.3-green)
+# wxcloudrun-django · 微信云托管 Django（去 AI 味版）
 
-微信云托管 python Django 框架模版，实现简单的计数器读写接口，使用云托管 MySQL 读写、记录计数值。
+微信云托管 Django 框架模板 + **去 AI 味（去 AI 腔）接口**。
 
-![](https://qcloudimg.tencent-cloud.cn/raw/be22992d297d1b9a1a5365e606276781.png)
+在小程序里粘贴一段疑似 AI 写的中文，返回「AI 味体检报告」和「改写后的人话」。
 
+```
+miniprogram/   微信原生小程序前端（4 个页面，无 UI 库、无构建）
+deai/          去 AI 味应用（引擎 + 5 个 API）
+wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
+```
 
-## 快速开始
-前往 [微信云托管快速开始页面](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/basic/guide.html)，选择相应语言的模板，根据引导完成部署。
+---
 
-## 本地调试
-下载代码在本地调试，请参考[微信云托管本地调试指南](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/)
+## 一、这个仓库是什么
 
-## 实时开发
-代码变动时，不需要重新构建和启动容器，即可查看变动后的效果。请参考[微信云托管实时开发指南](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/dev.html)
+上游是微信云托管的官方 Django 模板（`WeixinCloud/wxcloudrun-django`），
+本仓库在保留**原有计数器示例与主页**的前提下，做了两件事：
 
-## Dockerfile最佳实践
-请参考[如何提高项目构建效率](https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/scene/build/speed.html)
+**1. 加入 `deai` 应用** —— 去 AI 味的完整后端：
 
+| 能力 | 说明 | 耗时 | 消耗额度 |
+| --- | --- | --- | --- |
+| AI 味体检 | 命中 300+ 条词库与 36 条结构正则，给 0-100 分、分类明细、逐条原因与建议 | 毫秒级 | 否 |
+| 规则层改写 | 安全替换/删除高置信度的 AI 套话 | 毫秒级 | 否 |
+| AI 深度改写 | 调大模型重写全文（拆长句、调节奏、给判断） | 10-60 秒 | 每天限额 |
 
-## 目录结构说明
-~~~
+**2. 修掉模板里不能上生产的地方**：
+
+| 原模板 | 问题 | 现在 |
+| --- | --- | --- |
+| `from django.conf.urls import url` | 该 API 在 **Django 4.x 已被移除**，直接 ImportError | 改用 `re_path` / `path` |
+| `url(r'^^api/count(/)?$', ...)` | 正则开头**两个 `^`**，`/api/count` 永远匹配不上，请求掉进 catch-all 返回主页 HTML | 改为一个 `^` |
+| Django 3.2.8 | 已停止安全更新 | 升到 **4.2 LTS** |
+| `runserver` | 开发服务器，单线程，不能上生产 | `gunicorn`（2 worker × 4 线程） |
+| `DEBUG = True` + 硬编码 `SECRET_KEY` | 生产环境泄露堆栈、密钥进仓库 | 环境变量驱动，默认生产安全值 |
+| `os.environ.get("MYSQL_ADDRESS").split(':')` | 变量缺失直接 `AttributeError`，本地起不来 | 缺失则回落 SQLite |
+| 日志写 `logs/*.log` | 容器重启即丢，且云托管只采集 stdout，控制台看不到 | 统一打 stdout |
+| `TIME_ZONE = 'UTC'` | 容器已是 Asia/Shanghai，日志时间差 8 小时 | 对齐 Asia/Shanghai |
+| `Counters` 无迁移，建表 SQL 只在模板部署时跑 | 自建服务 / 本地开发时表不存在，`/api/count` 报错 | 补标准迁移 + `--fake-initial` 兼容已存在的表 |
+| `Counters` 模型四处 bug | `models.AutoField` 少括号、`IntegerField(max_length=)`、`datetime.now()` 类定义时求值、`__str__` 引用不存在的 `self.title` | 全部修掉（不需要迁移） |
+
+> `Counters` 模型的改动只涉及 Python 层，**不影响表结构**，因此升级时不需要额外迁移。
+
+---
+
+## 二、目录结构
+
+```
 .
-├── Dockerfile                  dockerfile
-├── README.md                   README.md文件
-├── container.config.json       模板部署「服务设置」初始化配置（二开请忽略）
-├── manage.py                   django项目管理文件 与项目进行交互的命令行工具集的入口
-├── requirements.txt            依赖包文件
-└── wxcloudrun                  app目录
-    ├── __init__.py             python项目必带  模块化思想
-    ├── apps.py                 自动生成文件apps.py
-    ├── asgi.py                 自动生成文件asgi.py, 异步服务网关接口
-    ├── migrations              数据移植（迁移）模块
-    ├── models.py               数据模块
-    ├── settings.py             项目的总配置文件  里面包含数据库 web应用 日志等各种配置
-    ├── templates               模版目录,包含主页index.html文件
-    ├── urls.py                 URL配置文件  Django项目中所有地址中（页面）都需要我们自己去配置其URL
-    ├── views.py                执行响应的代码所在模块  代码逻辑处理主要地点  项目大部分代码在此编写
-    └── wsgi.py                 自动生成文件wsgi.py, Web服务网关接口
-~~~
-
-
-## 服务 API 文档
-
-### `GET /api/count`
-
-获取当前计数
-
-#### 请求参数
-
-无
-
-#### 响应结果
-
-- `code`：错误码
-- `data`：当前计数值
-
-##### 响应结果示例
-
-```json
-{
-  "code": 0,
-  "data": 42
-}
+├── Dockerfile                  python:3.11-slim + gunicorn
+├── container.config.json       模板部署的「服务设置」初值（自建服务请忽略）
+├── requirements.txt            Django 4.2 / gunicorn / PyMySQL
+├── manage.py
+├── .env.example                本地开发的环境变量样例
+├── wxcloudrun/                 项目配置 + 模板原有计数器示例
+│   ├── settings.py             环境变量驱动，MySQL 缺失则回落 SQLite
+│   ├── urls.py                 deai 接口 + count + 主页
+│   ├── views.py / models.py    计数器示例（保留）
+│   ├── templates/index.html    模板欢迎页（保留）
+│   └── migrations/0001_initial.py   为 Counters 补的迁移
+├── deai/                       ★ 去 AI 味应用
+│   ├── engine/                 引擎（不依赖 Django、不联网，可单独测试）
+│   │   ├── rules.py            词库加载、命中检测、可安全执行的替换
+│   │   ├── detector.py         评分与体检报告
+│   │   ├── rewriter.py         LLM 编排 + 保真校验
+│   │   ├── llm.py              OpenAI 兼容客户端（纯标准库）
+│   │   ├── prompts.py          两版 system prompt
+│   │   ├── textutil.py         分句 / 标点清理 / 节奏统计
+│   │   └── data/rules.json     177 条替换 + 95 条标记 + 36 条结构正则
+│   ├── views.py                5 个接口，统一响应信封
+│   ├── models.py               RewriteTask / QuotaUsage
+│   ├── auth.py                 从云托管请求头取 openid
+│   ├── quota.py                每日额度
+│   └── tasks.py                后台线程池 + 超时判失败
+├── miniprogram/                ★ 微信小程序前端
+│   └── config.js               ★ 唯一需要手改的前端文件
+├── scripts/
+│   ├── dev.sh                  本地一键起服务
+│   └── smoke_api.py            接口端到端冒烟（无需联网）
+└── tests/test_engine.py        引擎单测 43 项（不需要 Django）
 ```
 
-#### 调用示例
+---
 
-```
-curl https://<云托管服务域名>/api/count
-```
+## 三、本地开发
 
-
-
-### `POST /api/count`
-
-更新计数，自增或者清零
-
-#### 请求参数
-
-- `action`：`string` 类型，枚举值
-  - 等于 `"inc"` 时，表示计数加一
-  - 等于 `"clear"` 时，表示计数重置（清零）
-
-##### 请求参数示例
-
-```
-{
-  "action": "inc"
-}
+```bash
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env          # 填 LLM_API_KEY
+./scripts/dev.sh              # → http://127.0.0.1:8080
 ```
 
-#### 响应结果
+不配 `MYSQL_ADDRESS` 时自动用 SQLite（`data/deai.sqlite3`），**不需要先装 MySQL**。
 
-- `code`：错误码
-- `data`：当前计数值
+自测：
 
-##### 响应结果示例
+```bash
+curl -s localhost:8080/api/health
+# {"ok": true, "data": {"status": "up", "llmConfigured": true}}
 
-```json
-{
-  "code": 0,
-  "data": 42
-}
+curl -s localhost:8080/api/analyze -H 'Content-Type: application/json' \
+  -d '{"text":"首先，AI 助手能够极大地提升工作效率。综上所述，它很有价值。"}'
+
+# 模板原有的计数器仍在（注意：原模板这里因为正则 bug 是访问不到的）
+curl -s localhost:8080/api/count
+# {"code": 0, "data": 0}
 ```
 
-#### 调用示例
+跑测试（**都不需要联网**）：
 
+```bash
+python3 -m unittest discover -s tests -t .   # 引擎单测 43 项
+python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 ```
-curl -X POST -H 'content-type: application/json' -d '{"action": "inc"}' https://<云托管服务域名>/api/count
+
+`smoke_api.py` 会故意把模型地址指向一个连不上的端口，从而把「建任务 → 后台线程 →
+轮询 → 失败兜底 → 配额扣减 → 鉴权」整条链路真实走一遍，同时回归模板原有的
+`/api/count` 与主页。
+
+---
+
+## 四、部署到微信云托管
+
+**前置**：已注册小程序，并在[微信云托管控制台](https://cloud.weixin.qq.com/)开通。
+
+1. **建环境**：新建环境，记下**环境 ID**（形如 `prod-xxxx`）。
+2. **建服务**：新建服务，服务名例如 `deai-api`。
+3. **部署**：
+   - 方式 A（推荐）：绑定本仓库，构建目录填 `.`。
+   - 方式 B：把仓库打成 zip 上传。
+   - **端口填 `80`**（必须与 Dockerfile 的 `EXPOSE 80` 一致，否则 `Readiness probe failed`）。
+4. **配环境变量**（服务设置 → 环境变量）—— 至少这三个：
+
+   | 变量 | 值 |
+   | --- | --- |
+   | `LLM_API_KEY` | 你的模型密钥 |
+   | `LLM_BASE_URL` | 如 `https://api.deepseek.com/v1` |
+   | `LLM_MODEL` | 如 `deepseek-chat` |
+
+   再补一个随机密钥：`DJANGO_SECRET_KEY`
+   （`python3 -c "import secrets;print(secrets.token_urlsafe(50))"`）。
+
+   > 环境变量在**构建阶段读不到**，只在运行时注入，所以不要在 Dockerfile 里读。
+
+   > 如果要用云托管内 MySQL：控制台开通后会自动注入 `MYSQL_ADDRESS` 等变量，
+   > 本项目无需额外配置。**多副本必须开 MySQL**，否则各副本任务状态不一致。
+
+5. **发布**：保存后发布版本，访问 `https://<域名>/api/health` 确认
+   `llmConfigured: true`。
+
+6. **小程序**：把环境 ID 与服务名填进 `miniprogram/config.js`：
+
+   ```js
+   module.exports = {
+     CLOUD_ENV: 'prod-xxxx',   // 第 1 步的环境 ID
+     SERVICE_NAME: 'deai-api', // 第 2 步的服务名
+   }
+   ```
+
+   再把 `project.config.json` 的 `appid` 换成你的，并在小程序后台把
+   **基础库最低版本设为 ≥ 2.23.0**（否则 `callContainer` 不可用）。
+
+7. **不需要**配「服务器域名」——`callContainer` 免域名校验、免备案。
+
+> ⚠️ `container.config.json` 只在「控制台一键模板部署」那一次生效；自己新建服务 +
+> 传代码包时它会被忽略，端口/规格/环境变量都要在控制台手填。
+
+---
+
+## 五、环境变量
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `LLM_API_KEY` | 空 | **必填**，模型密钥。只在服务端，绝不下发到小程序 |
+| `LLM_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI 兼容端点 |
+| `LLM_MODEL` | `deepseek-chat` | 模型名 |
+| `LLM_TIMEOUT` | `50` | 秒，会被夹到 ≤55 |
+| `DJANGO_SECRET_KEY` | 不安全默认值 | **生产必须换** |
+| `DJANGO_DEBUG` | `false` | |
+| `DJANGO_ALLOWED_HOSTS` | `*` | 云托管 Host 不固定，默认放开 |
+| `DEAI_MAX_INPUT_CHARS` | `5000` | 单次输入上限 |
+| `DEAI_DAILY_LIMIT` | `20` | 每人每天的 AI 改写次数（规则层不限） |
+| `DEAI_TASK_TIMEOUT_SECONDS` | `120` | 超时仍无结果的任务判为失败 |
+| `DEAI_WORKERS` | `4` | 后台改写线程数 |
+| `DEAI_ALLOW_ANONYMOUS` | =`DEBUG` | **生产必须 `false`**，否则公网可白嫖 |
+| `MYSQL_ADDRESS` | 空 | 配了用 MySQL，不配用 SQLite |
+| `MYSQL_DATABASE` | `django_demo` | |
+| `MYSQL_USERNAME` / `MYSQL_USER` | `root` | 两种命名都支持 |
+| `MYSQL_PASSWORD` | 空 | |
+
+---
+
+## 六、接口
+
+### 去 AI 味（统一信封）
+
+成功 `{"ok":true,"data":{...}}`，失败 `{"ok":false,"error":{"code":"XXX","message":"人话"}}`。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/health` | 探活，附带 `llmConfigured` |
+| POST | `/api/analyze` | `{text}` → 体检报告 + 规则改写，同步毫秒级，不消耗额度 |
+| POST | `/api/rewrite` | `{text, mode}` → **立刻**返回 `taskId` + 规则结果 + 报告 + 额度 |
+| GET | `/api/task/<id>` | 轮询：`status` ∈ `pending/running/done/failed` |
+| GET | `/api/quota` | `{used, limit, remaining}` |
+
+`mode` 取 `general`（通用）或 `xhs`（小红书）。
+错误码：`TEXT_EMPTY`、`TEXT_TOO_LONG`、`QUOTA_EXCEEDED`、`UNAUTHORIZED`、
+`LLM_NOT_CONFIGURED`、`TASK_NOT_FOUND`、`FORBIDDEN`、`METHOD_NOT_ALLOWED`、`INTERNAL`。
+
+### 模板原有：计数器示例（保持原格式）
+
+```bash
+curl https://<域名>/api/count
+curl -X POST -H 'content-type: application/json' \
+  -d '{"action": "inc"}' https://<域名>/api/count
 ```
 
-## 使用注意
-如果不是通过微信云托管控制台部署模板代码，而是自行复制/下载模板代码后，手动新建一个服务并部署，需要在「服务设置」中补全以下环境变量，才可正常使用，否则会引发无法连接数据库，进而导致部署失败。
-- MYSQL_ADDRESS
-- MYSQL_PASSWORD
-- MYSQL_USERNAME
-以上三个变量的值请按实际情况填写。如果使用云托管内MySQL，可以在控制台MySQL页面获取相关信息。
+响应是模板自己的 `{"code": 0, "data": 42}` 格式（**没有**改写成 deai 的信封，
+以免破坏已有调用方）。`action` 取 `inc` 或 `clear`。
 
+---
+
+## 七、为什么「深度改写」是异步的
+
+`wx.cloud.callContainer` 单次请求上限 **15 秒**，而大模型改写要 10-60 秒；并且
+小程序**切到后台 5 秒后请求会被系统杀掉**（`fail interrupted`）。所以：
+
+点「深度改写」时，接口**立刻**返回规则层结果 + 体检报告 + `taskId`，前端先展示
+规则版结果，再轮询 `/api/task/<id>`。即使模型超时或失败，用户手里也已经有一份
+可用的改写稿——这是刻意的降级设计。
+
+引擎的评分与词库细节见 `deai/engine/`，其中：
+
+* **评分**：严重度加权（high=3 / medium=1.4 / low=0.6，结构问题 ×1.5）换算成每百字
+  加权命中密度，再映射到 0-100；命中 1 条高危结构问题至少 45 分，2 条至少 70 分。
+* **只建议不自动改**：`conditional` 共 92 条，包括「首先」（教程步骤里合理）、
+  「不可否认」（作定语时改成「确实」会变病句）、「精益求精」等成语（作定语时删掉
+  会让句子缺成分）。规则层宁可改得少，也不能产出病句。
+
+---
+
+## 八、已知限制
+
+- **容器重启会杀掉正在跑的改写线程**。任务状态已落库，超过
+  `DEAI_TASK_TIMEOUT_SECONDS` 会判失败，用户重试即可。最小副本设为 0 时冷启动约几秒。
+- **多副本必须开 MySQL**，否则默认 SQLite 各副本不共享，轮询可能查不到任务。
+- **额度计数不是严格原子的**（`F()` 自增，但「先读后判」有极小竞争窗口）。作为免费
+  额度够用，要严格计费请换成 `select_for_update` + MySQL。
+- **规则层改写不保证通顺**，它的定位是「兜底 + 快速见效」；真正自然还得靠大模型那层。
+- **不做流式输出**：`callContainer` 不支持 SSE，想要打字机效果得走 WebSocket
+  （`connectContainer`）或自建公网域名。
+- **改写可能丢信息**：改写结果会过一道保真校验（对比数字、字数比例）并在界面提示，
+  但**请务必人工再读一遍再发布**。
+- 模型密钥若写进 `container.config.json` 会进仓库，**请只用控制台环境变量**。
+
+---
+
+## 九、上游模板
+
+- 微信云托管快速开始：<https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/basic/guide.html>
+- 本地调试指南：<https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/>
+- Dockerfile 最佳实践：<https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/scene/build/speed.html>
 
 ## License
 
