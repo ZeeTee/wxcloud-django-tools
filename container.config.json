@@ -20,9 +20,16 @@
 			"PolicyThreshold": 60
 		}
 	],
-	"envParams": {},                               
+	"envParams": {
+		// 只放非敏感默认值。密钥必须到「服务设置 → 环境变量」里手填，
+		// 写进这个文件等于提交进仓库。
+		"LLM_BASE_URL": "https://api.deepseek.com/v1",
+		"LLM_MODEL": "deepseek-chat",
+		"DJANGO_DEBUG": "false"
+	},                               
 	"customLogs": "stdout",                         
-	"initialDelaySeconds": 2,                       
+	// 容器启动时要先跑 migrate，2 秒不够，探测会先失败几次
+	"initialDelaySeconds": 10,                       
 	"dataBaseName":"django_demo",
 	"executeSQLs":[
 		"CREATE DATABASE IF NOT EXISTS django_demo;",
