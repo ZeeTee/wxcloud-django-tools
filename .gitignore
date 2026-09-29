@@ -132,10 +132,14 @@ dmypy.json
 
 # --- 本项目追加 ---------------------------------------------------------
 
-# Django 本地开发产物
-data/
-logs/
-staticfiles/
+# Django 本地开发产物。
+# 注意这里的前导斜杠：表示「只匹配仓库根」。不加斜杠时 Git 会匹配**任意层级**
+# 的同名目录 —— 曾经就是这条 `data/` 把 deai/engine/data/rules.json 一起忽略了，
+# 结果推上 GitHub 的代码缺了 49KB 词库，部署后引擎直接 FileNotFoundError。
+# 词库现已改名到 deai/engine/lexicon/，这里再加一层保险。
+/data/
+/logs/
+/staticfiles/
 
 # 小程序：开发者工具的私有配置（含个人设置），不应提交
 miniprogram/project.private.config.json

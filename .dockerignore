@@ -1,4 +1,6 @@
-# 构建镜像时不需要打进去的东西
+# 构建镜像时不需要打进去的东西。
+
+# 版本控制与构建配置本身
 .git
 .dockerignore
 container.config.json
@@ -13,12 +15,14 @@ scripts/
 tests/
 docs/
 
-# 本地产物
-__pycache__/
-*.py[cod]
-*.sqlite3
-data/
-logs/
-.venv/
-venv/
-staticfiles/
+# 本地产物。
+# 这里刻意用 `**/` 前缀：Docker 的 .dockerignore 对不含通配符的模式只做「根目录
+# 精确匹配」，写 `__pycache__` 是排不掉 deai/engine/__pycache__ 的，必须显式 **。
+**/__pycache__/
+**/*.py[cod]
+**/*.sqlite3
+/data/
+/logs/
+**/.venv/
+**/venv/
+/staticfiles/

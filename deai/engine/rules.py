@@ -24,7 +24,11 @@ from pathlib import Path
 
 from .textutil import cleanup_punct
 
-_DATA_FILE = Path(__file__).resolve().parent / "data" / "rules.json"
+# 词库目录刻意叫 lexicon 而不是 data：
+# `data/` 是 .gitignore / .dockerignore 里的常见条目，而 Git 的无斜杠模式会匹配
+# **任意层级**的同名目录，会把词库一起忽略掉（曾因此让 49KB 的词库没进仓库，
+# 部署后引擎直接 FileNotFoundError）。换掉目录名比加 `!` 例外可靠。
+_DATA_FILE = Path(__file__).resolve().parent / "lexicon" / "rules.json"
 
 # 模板规则里 `…` 最多吃掉多少个字符（避免跨句贪婪匹配）
 _MAX_GAP = 12

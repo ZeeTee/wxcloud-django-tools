@@ -24,6 +24,17 @@ RUN pip config set global.index-url https://mirrors.cloud.tencent.com/pypi/simpl
 
 COPY . .
 
+# ---- 构建期自检 ----------------------------------------------------------
+# 「本地跑得好好的、镜像里却没这个文件」这类问题只在部署完成后才暴露，
+# 排查成本很高（要去看容器日志）。所以在这里直接拦掉：
+#   1. Django 配置能不能正常加载（不需要数据库）；
+#   2. 词库 rules.json 是否真的进了镜像（曾被 .gitignore 的 data/ 规则漏掉过）。
+RUN python manage.py check \
+    && python -c "from deai.engine import get_engine; \
+n = len(get_engine()._rules); \
+assert n > 100, f'词库缺失！只加载到 {n} 条规则'; \
+print(f'[build] 词库加载正常：{n} 条规则')"
+
 # 端口必须与控制台「服务设置 / 发布时」填写的端口完全一致，否则 Readiness probe failed
 EXPOSE 80
 

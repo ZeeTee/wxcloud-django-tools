@@ -1,0 +1,1876 @@
+{
+ "meta": {
+  "name": "chinese-ai-flavor-rules",
+  "version": "1.0.0",
+  "description": "中文去AI味规则词库：可替换套话 + 只标记高危词 + 结构性正则模式",
+  "language": "zh-CN",
+  "notes": "replacements[].mode: unconditional=无条件可替换; conditional=需上下文; delete=建议删除。patterns 按 Python re 语法，均为非贪婪匹配，建议用 re.finditer 统计命中数并换算每千字密度。"
+ },
+ "replacements": [
+  {
+   "from": "综上所述",
+   "to": "",
+   "mode": "delete",
+   "note": "纯收束词，删后语义不变；英文 in conclusion 直译"
+  },
+  {
+   "from": "总而言之",
+   "to": "",
+   "mode": "delete",
+   "note": "同上，删掉即可，让最后一句自然收尾"
+  },
+  {
+   "from": "总的来说",
+   "to": "",
+   "mode": "delete",
+   "note": "删掉，或换成「反正」「这么看下来」"
+  },
+  {
+   "from": "概括而言",
+   "to": "这么看下来",
+   "mode": "conditional",
+   "note": "技术/正式文档可保留，社媒建议口语化"
+  },
+  {
+   "from": "归根结底",
+   "to": "说到底",
+   "mode": "conditional",
+   "note": "本身不算错，密度高才可疑；一篇最多一次"
+  },
+  {
+   "from": "由此可见",
+   "to": "所以",
+   "mode": "unconditional",
+   "note": "推论词直译，中文口语用「所以」"
+  },
+  {
+   "from": "不难发现",
+   "to": "",
+   "mode": "delete",
+   "note": "it is not hard to find 直译，删掉直接说结论"
+  },
+  {
+   "from": "不难看出",
+   "to": "",
+   "mode": "delete",
+   "note": "同「不难发现」，删后无损"
+  },
+  {
+   "from": "值得注意的是",
+   "to": "",
+   "mode": "delete",
+   "note": "it is worth noting 直译，删后直接说事"
+  },
+  {
+   "from": "值得一提的是",
+   "to": "",
+   "mode": "delete",
+   "note": "同上，属空转铺垫"
+  },
+  {
+   "from": "值得关注的是",
+   "to": "",
+   "mode": "delete",
+   "note": "同上，且带播音腔"
+  },
+  {
+   "from": "需要指出的是",
+   "to": "",
+   "mode": "delete",
+   "note": "删后句子依然成立"
+  },
+  {
+   "from": "需要明白的是",
+   "to": "",
+   "mode": "delete",
+   "note": "说教式铺垫，删"
+  },
+  {
+   "from": "不可否认",
+   "to": "确实",
+   "mode": "conditional",
+   "note": "让步套话，中文说「确实」就够 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "毋庸置疑",
+   "to": "确实",
+   "mode": "conditional",
+   "note": "自明之事不必强调；「确实」即可 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "不言而喻",
+   "to": "明摆着",
+   "mode": "unconditional",
+   "note": "书面成语空转，换口语"
+  },
+  {
+   "from": "众所周知",
+   "to": "",
+   "mode": "delete",
+   "note": "真的众所周知就不用写；后面常跟并非众所周知的事"
+  },
+  {
+   "from": "毫无疑问",
+   "to": "确实",
+   "mode": "unconditional",
+   "note": "强调虚壳，删或换「确实」"
+  },
+  {
+   "from": "毫无疑问，",
+   "to": "",
+   "mode": "delete",
+   "note": "同上"
+  },
+  {
+   "from": "众所周知，",
+   "to": "",
+   "mode": "delete",
+   "note": "同上"
+  },
+  {
+   "from": "此外",
+   "to": "还有",
+   "mode": "unconditional",
+   "note": "furthermore 直译；中文口语「还有」"
+  },
+  {
+   "from": "另外",
+   "to": "还有",
+   "mode": "conditional",
+   "note": "「另外」本身正常，密度高才处理"
+  },
+  {
+   "from": "与此同时",
+   "to": "同时",
+   "mode": "unconditional",
+   "note": "at the same time 直译，中文少有「与」"
+  },
+  {
+   "from": "与之相对",
+   "to": "反过来",
+   "mode": "unconditional",
+   "note": "书面框架，换口语"
+  },
+  {
+   "from": "更重要的是",
+   "to": "",
+   "mode": "delete",
+   "note": "递进靠内容自身，删连接词不影响阅读"
+  },
+  {
+   "from": "不仅如此",
+   "to": "",
+   "mode": "delete",
+   "note": "同上，属英文 moreover 直译"
+  },
+  {
+   "from": "更重要的是，",
+   "to": "",
+   "mode": "delete",
+   "note": "同上"
+  },
+  {
+   "from": "除此之外",
+   "to": "还有",
+   "mode": "unconditional",
+   "note": "直接说「还有」"
+  },
+  {
+   "from": "首先",
+   "to": "",
+   "mode": "conditional",
+   "note": "步骤/教程/清单里合理，必须保留；普通论述段中删除或改成短句"
+  },
+  {
+   "from": "其次",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上，只有在与「首先」配对分点时保留"
+  },
+  {
+   "from": "再次",
+   "to": "",
+   "mode": "conditional",
+   "note": "中文口语几乎不用「再次」当序数；分点场景可留"
+  },
+  {
+   "from": "最后",
+   "to": "",
+   "mode": "conditional",
+   "note": "作序数用时删；作时间副词（最后他走了）保留"
+  },
+  {
+   "from": "接下来",
+   "to": "",
+   "mode": "conditional",
+   "note": "作预告（接下来我们来看）删；作真实时间顺序保留"
+  },
+  {
+   "from": "在当今社会",
+   "to": "",
+   "mode": "delete",
+   "note": "万能开头，第一句应直接给场景或结论"
+  },
+  {
+   "from": "在当今",
+   "to": "",
+   "mode": "conditional",
+   "note": "「在当今…的时代/背景下」整体删；单独「在当今」也基本是套话"
+  },
+  {
+   "from": "随着…的不断发展",
+   "to": "",
+   "mode": "delete",
+   "note": "with the continuous development 直译，标准 AI 起手"
+  },
+  {
+   "from": "随着",
+   "to": "",
+   "mode": "conditional",
+   "note": "「随着」作真实因果（随着温度升高）保留；作宏大背景起手删"
+  },
+  {
+   "from": "在实际应用中",
+   "to": "",
+   "mode": "conditional",
+   "note": "后面若无具体场景/数字则删，属伪经验开场"
+  },
+  {
+   "from": "在实践中",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上，需要有可验证细节才留"
+  },
+  {
+   "from": "在…的背景下",
+   "to": "",
+   "mode": "delete",
+   "note": "背景铺垫套话，直接进入正题"
+  },
+  {
+   "from": "极大地",
+   "to": "",
+   "mode": "delete",
+   "note": "greatly 直译，删掉，用数字替代"
+  },
+  {
+   "from": "显著地",
+   "to": "",
+   "mode": "delete",
+   "note": "significantly 直译，删掉换数据"
+  },
+  {
+   "from": "有效地",
+   "to": "",
+   "mode": "delete",
+   "note": "effectively 直译，删"
+  },
+  {
+   "from": "深刻地",
+   "to": "",
+   "mode": "delete",
+   "note": "profoundly 直译，删"
+  },
+  {
+   "from": "深远地",
+   "to": "",
+   "mode": "delete",
+   "note": "同上"
+  },
+  {
+   "from": "至关重要",
+   "to": "很关键",
+   "mode": "conditional",
+   "note": "改口语或直接说「不做的后果」；密度高才必要"
+  },
+  {
+   "from": "不可或缺",
+   "to": "少不了",
+   "mode": "unconditional",
+   "note": "书面空话，换口语；或说清缺了会怎样"
+  },
+  {
+   "from": "举足轻重",
+   "to": "很关键",
+   "mode": "unconditional",
+   "note": "成语空转，换口语"
+  },
+  {
+   "from": "必不可少",
+   "to": "少不了",
+   "mode": "unconditional",
+   "note": "同上"
+  },
+  {
+   "from": "令人瞩目",
+   "to": "",
+   "mode": "delete",
+   "note": "宣传腔，删或给数据"
+  },
+  {
+   "from": "可圈可点",
+   "to": "还行",
+   "mode": "unconditional",
+   "note": "宣传腔，换口语评价"
+  },
+  {
+   "from": "取得了显著成效",
+   "to": "有效果",
+   "mode": "conditional",
+   "note": "建议直接给具体效果；「有效果」也比原句实"
+  },
+  {
+   "from": "发挥了重要作用",
+   "to": "起了作用",
+   "mode": "conditional",
+   "note": "played an important role 直译；最好说清做了什么"
+  },
+  {
+   "from": "起到了…的作用",
+   "to": "…了",
+   "mode": "conditional",
+   "note": "空壳动词短语，换成具体动作，如「推动」直接作谓语"
+  },
+  {
+   "from": "有着重要意义",
+   "to": "有意义",
+   "mode": "conditional",
+   "note": "意义拔高，建议直接说对谁有什么用"
+  },
+  {
+   "from": "具有里程碑式的意义",
+   "to": "",
+   "mode": "conditional",
+   "note": "新闻通稿套话，删或说清具体改了什么 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "标志着…的新篇章",
+   "to": "",
+   "mode": "conditional",
+   "note": "marks a new chapter 直译，删 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "注入了新的活力",
+   "to": "",
+   "mode": "conditional",
+   "note": "inject new vitality 直译，删 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "提供了有力支撑",
+   "to": "",
+   "mode": "conditional",
+   "note": "企业软文套话，删 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "奠定了坚实基础",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "树立了新的标杆",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "产生了深远影响",
+   "to": "",
+   "mode": "conditional",
+   "note": "删，或说清影响了什么 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "让我们一起",
+   "to": "",
+   "mode": "delete",
+   "note": "let us 直译，对陌生读者喊「我们」是 AI 表演"
+  },
+  {
+   "from": "携起手来",
+   "to": "",
+   "mode": "delete",
+   "note": "口号收尾，删"
+  },
+  {
+   "from": "携手前行",
+   "to": "",
+   "mode": "delete",
+   "note": "同上"
+  },
+  {
+   "from": "共创美好未来",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "未来可期",
+   "to": "",
+   "mode": "conditional",
+   "note": "展望三件套，删 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "拭目以待",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "大有可为",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "前景广阔",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "充满无限可能",
+   "to": "",
+   "mode": "conditional",
+   "note": "空话，删 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "我们有理由相信",
+   "to": "",
+   "mode": "conditional",
+   "note": "we have reason to believe 直译，删 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "相信在未来",
+   "to": "",
+   "mode": "conditional",
+   "note": "删，若要预测就说依据 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "希望本文对你有所帮助",
+   "to": "",
+   "mode": "delete",
+   "note": "客服收尾，成稿里没有对话对象"
+  },
+  {
+   "from": "希望本文能帮到你",
+   "to": "",
+   "mode": "delete",
+   "note": "同上"
+  },
+  {
+   "from": "希望以上信息对您有所帮助",
+   "to": "",
+   "mode": "delete",
+   "note": "I hope this helps 直译，删"
+  },
+  {
+   "from": "如有疑问请随时咨询",
+   "to": "",
+   "mode": "delete",
+   "note": "客服话术，删"
+  },
+  {
+   "from": "欢迎在评论区讨论",
+   "to": "",
+   "mode": "delete",
+   "note": "求互动套话；想互动就换成对具体事的真问题"
+  },
+  {
+   "from": "以上就是我的分享",
+   "to": "",
+   "mode": "delete",
+   "note": "元评论收尾，删"
+  },
+  {
+   "from": "本文将从",
+   "to": "",
+   "mode": "delete",
+   "note": "元评论，直接进入内容"
+  },
+  {
+   "from": "接下来我将",
+   "to": "",
+   "mode": "delete",
+   "note": "预告要说什么，删"
+  },
+  {
+   "from": "接下来我们来看",
+   "to": "",
+   "mode": "delete",
+   "note": "同上"
+  },
+  {
+   "from": "下面我们来看",
+   "to": "",
+   "mode": "delete",
+   "note": "同上"
+  },
+  {
+   "from": "在开始之前",
+   "to": "",
+   "mode": "delete",
+   "note": "导览语，删"
+  },
+  {
+   "from": "让我们来看看",
+   "to": "",
+   "mode": "delete",
+   "note": "let us take a look 直译，删"
+  },
+  {
+   "from": "让我们来分析",
+   "to": "",
+   "mode": "delete",
+   "note": "同上"
+  },
+  {
+   "from": "我想说的是",
+   "to": "",
+   "mode": "delete",
+   "note": "元评论，删"
+  },
+  {
+   "from": "回到正题",
+   "to": "",
+   "mode": "conditional",
+   "note": "确实跑题了才用；否则删"
+  },
+  {
+   "from": "值得注意的是，我们",
+   "to": "我们",
+   "mode": "unconditional",
+   "note": "删掉铺垫保留主句"
+  },
+  {
+   "from": "对…进行优化",
+   "to": "优化…",
+   "mode": "unconditional",
+   "note": "动词名词化，直接让动词作谓语"
+  },
+  {
+   "from": "对…进行分析",
+   "to": "分析…",
+   "mode": "unconditional",
+   "note": "同上，conduct an analysis of 直译"
+  },
+  {
+   "from": "对…进行了讨论",
+   "to": "讨论了…",
+   "mode": "unconditional",
+   "note": "held a discussion 直译"
+  },
+  {
+   "from": "进行了调查",
+   "to": "调查了",
+   "mode": "unconditional",
+   "note": "同上"
+  },
+  {
+   "from": "加以解决",
+   "to": "解决",
+   "mode": "unconditional",
+   "note": "删掉空动词「加以」"
+  },
+  {
+   "from": "给予帮助",
+   "to": "帮忙",
+   "mode": "unconditional",
+   "note": "give help to 直译"
+  },
+  {
+   "from": "使…得到了提升",
+   "to": "…变快了",
+   "mode": "conditional",
+   "note": "需按上下文换具体动词"
+  },
+  {
+   "from": "起到了促进作用",
+   "to": "推动了",
+   "mode": "conditional",
+   "note": "需看是什么作用，不能一律替换"
+  },
+  {
+   "from": "对于…而言",
+   "to": "对…来说",
+   "mode": "unconditional",
+   "note": "as for 直译，中文口语用「对…来说」或直接作主语"
+  },
+  {
+   "from": "就目前而言",
+   "to": "现在还",
+   "mode": "unconditional",
+   "note": "书面框架，换口语"
+  },
+  {
+   "from": "作为一个…",
+   "to": "我…",
+   "mode": "conditional",
+   "note": "As a... 直译；改成第一人称直接陈述"
+  },
+  {
+   "from": "被誉为",
+   "to": "被叫作",
+   "mode": "conditional",
+   "note": "「被誉为」常带宣传腔，需看是否真有必要"
+  },
+  {
+   "from": "堪称",
+   "to": "是",
+   "mode": "unconditional",
+   "note": "回避系动词，用「是」即可"
+  },
+  {
+   "from": "可谓",
+   "to": "是",
+   "mode": "unconditional",
+   "note": "同上"
+  },
+  {
+   "from": "称得上",
+   "to": "算得上",
+   "mode": "conditional",
+   "note": "口语可保留「算得上」，书面抬高调子时删"
+  },
+  {
+   "from": "不啻为",
+   "to": "就是",
+   "mode": "unconditional",
+   "note": "过度书面，换「就是」"
+  },
+  {
+   "from": "赋能",
+   "to": "帮",
+   "mode": "conditional",
+   "note": "黑话；面向大众的稿子换成「帮」「支持」"
+  },
+  {
+   "from": "助力",
+   "to": "帮",
+   "mode": "conditional",
+   "note": "企业软文标配，换「帮」"
+  },
+  {
+   "from": "深耕",
+   "to": "做了很久",
+   "mode": "conditional",
+   "note": "黑话；行业内部稿可留"
+  },
+  {
+   "from": "打造",
+   "to": "做",
+   "mode": "conditional",
+   "note": "什么都能打造，换具体动词"
+  },
+  {
+   "from": "聚焦",
+   "to": "主要做",
+   "mode": "conditional",
+   "note": "密度高时换"
+  },
+  {
+   "from": "抓手",
+   "to": "切入点",
+   "mode": "conditional",
+   "note": "官腔；面向大众稿换「办法」"
+  },
+  {
+   "from": "闭环",
+   "to": "从头到尾跑一遍",
+   "mode": "conditional",
+   "note": "管理黑话；说清是什么流程"
+  },
+  {
+   "from": "打通",
+   "to": "连起来",
+   "mode": "conditional",
+   "note": "黑话；说清连的是哪两个系统"
+  },
+  {
+   "from": "底层逻辑",
+   "to": "根本原因",
+   "mode": "conditional",
+   "note": "伪深度词，换「根本原因」或「说白了」"
+  },
+  {
+   "from": "认知升级",
+   "to": "学到了新东西",
+   "mode": "conditional",
+   "note": "伪深度词"
+  },
+  {
+   "from": "颗粒度",
+   "to": "细节程度",
+   "mode": "conditional",
+   "note": "伪深度词；说清具体细到什么程度"
+  },
+  {
+   "from": "心智",
+   "to": "印象",
+   "mode": "conditional",
+   "note": "「占领用户心智」→「让用户记住」"
+  },
+  {
+   "from": "链路",
+   "to": "流程",
+   "mode": "conditional",
+   "note": "黑话，换「流程」"
+  },
+  {
+   "from": "降本增效",
+   "to": "省钱、提效率",
+   "mode": "conditional",
+   "note": "企业八股，说清省了多少"
+  },
+  {
+   "from": "数智化",
+   "to": "数字化",
+   "mode": "conditional",
+   "note": "造词，换「用上了 AI」或「数字化」"
+  },
+  {
+   "from": "新质生产力",
+   "to": "",
+   "mode": "conditional",
+   "note": "政策黑话，换成具体技术或产能"
+  },
+  {
+   "from": "痛点",
+   "to": "麻烦",
+   "mode": "conditional",
+   "note": "流行黑话，面向大众稿换「麻烦」「卡住的地方」"
+  },
+  {
+   "from": "爽点",
+   "to": "",
+   "mode": "conditional",
+   "note": "黑话，说清具体好在哪"
+  },
+  {
+   "from": "赛道",
+   "to": "领域",
+   "mode": "conditional",
+   "note": "黑话，换「领域」「行当」"
+  },
+  {
+   "from": "破圈",
+   "to": "出到圈外",
+   "mode": "conditional",
+   "note": "黑话，说清谁开始用了"
+  },
+  {
+   "from": "很大程度上",
+   "to": "",
+   "mode": "delete",
+   "note": "模糊限定，删后更利落"
+  },
+  {
+   "from": "在一定程度上",
+   "to": "",
+   "mode": "delete",
+   "note": "同上，属不承担判断的保险话"
+  },
+  {
+   "from": "在某种意义上",
+   "to": "",
+   "mode": "delete",
+   "note": "同上"
+  },
+  {
+   "from": "进一步",
+   "to": "",
+   "mode": "conditional",
+   "note": "虚化副词；后面若无真实递进则删"
+  },
+  {
+   "from": "不断",
+   "to": "",
+   "mode": "conditional",
+   "note": "「不断学习」这类空话删；「不断报错」保留"
+  },
+  {
+   "from": "持续地",
+   "to": "",
+   "mode": "delete",
+   "note": "虚化副词，删"
+  },
+  {
+   "from": "更好地",
+   "to": "",
+   "mode": "conditional",
+   "note": "in order to better 直译；后接具体动作时删"
+  },
+  {
+   "from": "愈发",
+   "to": "越来越",
+   "mode": "unconditional",
+   "note": "书面词换口语"
+  },
+  {
+   "from": "切实",
+   "to": "",
+   "mode": "conditional",
+   "note": "虚化副词；「切实解决」→「解决」"
+  },
+  {
+   "from": "真正地",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上，密度高时删"
+  },
+  {
+   "from": "众所周知的是",
+   "to": "",
+   "mode": "delete",
+   "note": "叠床架屋，删"
+  },
+  {
+   "from": "双刃剑",
+   "to": "",
+   "mode": "conditional",
+   "note": "烂比喻；需换成与内容相关的说法"
+  },
+  {
+   "from": "一把双刃剑",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上，建议改成具体利弊"
+  },
+  {
+   "from": "新时代的石油",
+   "to": "",
+   "mode": "conditional",
+   "note": "被用烂的比喻，删 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "指明方向",
+   "to": "",
+   "mode": "conditional",
+   "note": "灯塔类烂比喻，说清具体建议"
+  },
+  {
+   "from": "奠定基础",
+   "to": "",
+   "mode": "conditional",
+   "note": "lay the foundation 直译，说清为后续做了什么"
+  },
+  {
+   "from": "欣欣向荣",
+   "to": "",
+   "mode": "conditional",
+   "note": "正能量成语，宣传腔 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "蓬勃发展",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上，换具体增长数据 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "日新月异",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "如火如荼",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "方兴未艾",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "势不可挡",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "砥砺前行",
+   "to": "",
+   "mode": "conditional",
+   "note": "正能量成语，删 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "勇立潮头",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "精益求精",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上，说清具体改了什么 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "匠心独运",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "锦上添花",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "画龙点睛",
+   "to": "",
+   "mode": "conditional",
+   "note": "同上 ｜ 降级为只建议：直接删除会破坏句子成分"
+  },
+  {
+   "from": "一目了然",
+   "to": "一眼看懂",
+   "mode": "unconditional",
+   "note": "成语换大白话"
+  },
+  {
+   "from": "得心应手",
+   "to": "用起来顺手",
+   "mode": "conditional",
+   "note": "替换后可能是病句（如「用得得心应手」），改为只建议不自动替换"
+  },
+  {
+   "from": "事半功倍",
+   "to": "省一半力气",
+   "mode": "conditional",
+   "note": "替换后可能是病句（如「用得得心应手」），改为只建议不自动替换"
+  },
+  {
+   "from": "游刃有余",
+   "to": "很轻松",
+   "mode": "conditional",
+   "note": "替换后可能是病句（如「用得得心应手」），改为只建议不自动替换"
+  },
+  {
+   "from": "息息相关",
+   "to": "关系很大",
+   "mode": "unconditional",
+   "note": "同上"
+  },
+  {
+   "from": "相辅相成",
+   "to": "互相配合",
+   "mode": "unconditional",
+   "note": "原替换「互相离不开」在句中不通顺，改为可作谓语的说法"
+  },
+  {
+   "from": "进行",
+   "to": "",
+   "mode": "conditional",
+   "note": "只在「进行+名词」结构里删；「进行中」等保留"
+  },
+  {
+   "from": "实现",
+   "to": "做到",
+   "mode": "conditional",
+   "note": "「实现了增长」→「涨了」；需按上下文"
+  },
+  {
+   "from": "具备",
+   "to": "有",
+   "mode": "unconditional",
+   "note": "书面词换口语"
+  },
+  {
+   "from": "拥有",
+   "to": "有",
+   "mode": "conditional",
+   "note": "面向大众稿换「有」"
+  },
+  {
+   "from": "旨在",
+   "to": "想做",
+   "mode": "conditional",
+   "note": "aims to 直译，企业稿常见"
+  },
+  {
+   "from": "致力于",
+   "to": "在做",
+   "mode": "conditional",
+   "note": "committed to 直译"
+  },
+  {
+   "from": "通过…来…",
+   "to": "",
+   "mode": "conditional",
+   "note": "拆成两个动作直接说，如「换了新架构后，事故少了」"
+  },
+  {
+   "from": "在…方面",
+   "to": "",
+   "mode": "conditional",
+   "note": "换成具体对象作主语，如「登录页加载从 3 秒降到 0.8 秒」"
+  },
+  {
+   "from": "呈现出",
+   "to": "看起来",
+   "mode": "unconditional",
+   "note": "书面词换口语"
+  },
+  {
+   "from": "获取",
+   "to": "拿到",
+   "mode": "unconditional",
+   "note": "同上"
+  },
+  {
+   "from": "此外还有",
+   "to": "还有",
+   "mode": "delete",
+   "note": "语义重复，删一个"
+  },
+  {
+   "from": "希望本文能够对您有所帮助",
+   "to": "",
+   "mode": "delete",
+   "note": "客服式收尾变体，整句删除"
+  },
+  {
+   "from": "希望本文对您有所帮助",
+   "to": "",
+   "mode": "delete",
+   "note": "客服式收尾变体，整句删除"
+  },
+  {
+   "from": "希望对您有所帮助",
+   "to": "",
+   "mode": "delete",
+   "note": "客服式收尾变体，整句删除"
+  },
+  {
+   "from": "希望对你有帮助",
+   "to": "",
+   "mode": "delete",
+   "note": "客服式收尾变体，整句删除"
+  },
+  {
+   "from": "感谢您的阅读",
+   "to": "",
+   "mode": "delete",
+   "note": "结尾客套话，删后无信息损失"
+  },
+  {
+   "from": "感谢阅读",
+   "to": "",
+   "mode": "delete",
+   "note": "结尾客套话，删后无信息损失"
+  },
+  {
+   "from": "以上就是全部内容",
+   "to": "",
+   "mode": "delete",
+   "note": "纯收束，删后语义不变"
+  }
+ ],
+ "flagged": [
+  {
+   "pattern": "首先",
+   "reason": "机器分点骨架；教程步骤中合理，普通论述中可疑",
+   "severity": "medium"
+  },
+  {
+   "pattern": "其次",
+   "reason": "与「首先」配对出现时基本确认是 AI 分点",
+   "severity": "medium"
+  },
+  {
+   "pattern": "综上所述",
+   "reason": "收束套话，出现即扣分",
+   "severity": "high"
+  },
+  {
+   "pattern": "总而言之",
+   "reason": "收束套话",
+   "severity": "high"
+  },
+  {
+   "pattern": "总的来说",
+   "reason": "收束套话",
+   "severity": "high"
+  },
+  {
+   "pattern": "由此可见",
+   "reason": "推论铺垫，删后无损",
+   "severity": "high"
+  },
+  {
+   "pattern": "不难发现",
+   "reason": "it is not hard to find 直译",
+   "severity": "high"
+  },
+  {
+   "pattern": "值得注意的是",
+   "reason": "it is worth noting 直译，空转铺垫",
+   "severity": "high"
+  },
+  {
+   "pattern": "值得一提的是",
+   "reason": "同上",
+   "severity": "high"
+  },
+  {
+   "pattern": "不可否认",
+   "reason": "让步套话，伪平衡外壳",
+   "severity": "high"
+  },
+  {
+   "pattern": "毋庸置疑",
+   "reason": "强调虚壳",
+   "severity": "high"
+  },
+  {
+   "pattern": "不言而喻",
+   "reason": "强调虚壳",
+   "severity": "high"
+  },
+  {
+   "pattern": "众所周知",
+   "reason": "后面常跟并非众所周知的事",
+   "severity": "high"
+  },
+  {
+   "pattern": "随着",
+   "reason": "若出现在首句且搭配「发展/进步」即为万能开头",
+   "severity": "medium"
+  },
+  {
+   "pattern": "在当今",
+   "reason": "万能开头标记",
+   "severity": "high"
+  },
+  {
+   "pattern": "在…的背景下",
+   "reason": "背景铺垫套话",
+   "severity": "medium"
+  },
+  {
+   "pattern": "在实际应用中",
+   "reason": "伪经验开场，后面常无具体场景",
+   "severity": "high"
+  },
+  {
+   "pattern": "极大地",
+   "reason": "程度副词代替数据",
+   "severity": "high"
+  },
+  {
+   "pattern": "显著地",
+   "reason": "同上",
+   "severity": "high"
+  },
+  {
+   "pattern": "有效地",
+   "reason": "同上",
+   "severity": "high"
+  },
+  {
+   "pattern": "深刻地",
+   "reason": "同上，且用于意义拔高",
+   "severity": "high"
+  },
+  {
+   "pattern": "至关重要",
+   "reason": "重要性空喊，不解释后果",
+   "severity": "high"
+  },
+  {
+   "pattern": "不可或缺",
+   "reason": "同上",
+   "severity": "high"
+  },
+  {
+   "pattern": "举足轻重",
+   "reason": "同上",
+   "severity": "high"
+  },
+  {
+   "pattern": "具有里程碑式",
+   "reason": "新闻通稿式意义拔高",
+   "severity": "high"
+  },
+  {
+   "pattern": "注入了新的活力",
+   "reason": "inject new vitality 直译",
+   "severity": "high"
+  },
+  {
+   "pattern": "提供了有力支撑",
+   "reason": "企业软文套话",
+   "severity": "high"
+  },
+  {
+   "pattern": "奠定了坚实基础",
+   "reason": "同上",
+   "severity": "high"
+  },
+  {
+   "pattern": "产生了深远影响",
+   "reason": "意义拔高",
+   "severity": "high"
+  },
+  {
+   "pattern": "让我们一起",
+   "reason": "let us 直译，口号收尾",
+   "severity": "high"
+  },
+  {
+   "pattern": "未来可期",
+   "reason": "展望套话",
+   "severity": "high"
+  },
+  {
+   "pattern": "拭目以待",
+   "reason": "展望套话",
+   "severity": "high"
+  },
+  {
+   "pattern": "大有可为",
+   "reason": "展望套话",
+   "severity": "high"
+  },
+  {
+   "pattern": "希望本文能帮到你",
+   "reason": "客服收尾，成稿无对话对象",
+   "severity": "high"
+  },
+  {
+   "pattern": "希望以上信息对您有所帮助",
+   "reason": "I hope this helps 直译",
+   "severity": "high"
+  },
+  {
+   "pattern": "如有疑问请随时咨询",
+   "reason": "客服话术残留",
+   "severity": "high"
+  },
+  {
+   "pattern": "欢迎在评论区",
+   "reason": "求互动套话",
+   "severity": "medium"
+  },
+  {
+   "pattern": "本文将",
+   "reason": "元评论，预告自己写什么",
+   "severity": "high"
+  },
+  {
+   "pattern": "接下来我将",
+   "reason": "元评论",
+   "severity": "high"
+  },
+  {
+   "pattern": "下面我们来看",
+   "reason": "元评论",
+   "severity": "high"
+  },
+  {
+   "pattern": "让我们来看看",
+   "reason": "let us take a look 直译",
+   "severity": "high"
+  },
+  {
+   "pattern": "回到正题",
+   "reason": "元评论；除非真跑题",
+   "severity": "medium"
+  },
+  {
+   "pattern": "不是…而是…",
+   "reason": "not A but B 骨架，一篇超两次即高危",
+   "severity": "high"
+  },
+  {
+   "pattern": "不仅…而且…",
+   "reason": "欧化关联词，成段使用可疑",
+   "severity": "high"
+  },
+  {
+   "pattern": "既…又…",
+   "reason": "模板化对仗",
+   "severity": "medium"
+  },
+  {
+   "pattern": "一方面…另一方面…",
+   "reason": "二分骨架，AI 成段使用",
+   "severity": "medium"
+  },
+  {
+   "pattern": "诚然",
+   "reason": "让步-转折模板起手",
+   "severity": "medium"
+  },
+  {
+   "pattern": "被誉为",
+   "reason": "宣传腔；且常无出处",
+   "severity": "medium"
+  },
+  {
+   "pattern": "堪称",
+   "reason": "回避系动词「是」，抬高调子",
+   "severity": "medium"
+  },
+  {
+   "pattern": "可谓",
+   "reason": "同上",
+   "severity": "medium"
+  },
+  {
+   "pattern": "研究表明",
+   "reason": "无源权威铺垫，需核实是否有具体研究",
+   "severity": "high"
+  },
+  {
+   "pattern": "数据显示",
+   "reason": "同上，需核实数据来源",
+   "severity": "high"
+  },
+  {
+   "pattern": "业内普遍认为",
+   "reason": "无源权威，且「普遍」不可证",
+   "severity": "high"
+  },
+  {
+   "pattern": "专家指出",
+   "reason": "未指名专家的空挂权威",
+   "severity": "high"
+  },
+  {
+   "pattern": "有句话说得好",
+   "reason": "查无出处的名言铺垫",
+   "severity": "medium"
+  },
+  {
+   "pattern": "赋能",
+   "reason": "互联网黑话之王",
+   "severity": "high"
+  },
+  {
+   "pattern": "抓手",
+   "reason": "官腔，官样文章标记",
+   "severity": "high"
+  },
+  {
+   "pattern": "闭环",
+   "reason": "管理黑话",
+   "severity": "high"
+  },
+  {
+   "pattern": "打通",
+   "reason": "黑话，且指代模糊",
+   "severity": "medium"
+  },
+  {
+   "pattern": "底层逻辑",
+   "reason": "伪深度词",
+   "severity": "high"
+  },
+  {
+   "pattern": "降本增效",
+   "reason": "企业八股",
+   "severity": "high"
+  },
+  {
+   "pattern": "数智化",
+   "reason": "造词，语义模糊",
+   "severity": "medium"
+  },
+  {
+   "pattern": "颗粒度",
+   "reason": "伪深度词",
+   "severity": "medium"
+  },
+  {
+   "pattern": "心智",
+   "reason": "营销黑话",
+   "severity": "medium"
+  },
+  {
+   "pattern": "痛点",
+   "reason": "流行黑话，面向大众稿可疑",
+   "severity": "medium"
+  },
+  {
+   "pattern": "赛道",
+   "reason": "流行黑话",
+   "severity": "medium"
+  },
+  {
+   "pattern": "双刃剑",
+   "reason": "被用烂的比喻",
+   "severity": "high"
+  },
+  {
+   "pattern": "新时代的石油",
+   "reason": "被用烂的比喻",
+   "severity": "medium"
+  },
+  {
+   "pattern": "基石",
+   "reason": "烂比喻库存",
+   "severity": "medium"
+  },
+  {
+   "pattern": "催化剂",
+   "reason": "烂比喻库存",
+   "severity": "medium"
+  },
+  {
+   "pattern": "灯塔",
+   "reason": "烂比喻库存",
+   "severity": "medium"
+  },
+  {
+   "pattern": "精益求精",
+   "reason": "正能量成语簇",
+   "severity": "medium"
+  },
+  {
+   "pattern": "砥砺前行",
+   "reason": "正能量成语簇",
+   "severity": "medium"
+  },
+  {
+   "pattern": "欣欣向荣",
+   "reason": "宣传腔成语",
+   "severity": "high"
+  },
+  {
+   "pattern": "蓬勃发展",
+   "reason": "宣传腔成语",
+   "severity": "high"
+  },
+  {
+   "pattern": "家人们",
+   "reason": "假亲切称呼，直播/AI 话术指纹",
+   "severity": "high"
+  },
+  {
+   "pattern": "宝子们",
+   "reason": "假亲切称呼",
+   "severity": "high"
+  },
+  {
+   "pattern": "亲爱的读者",
+   "reason": "假亲切称呼",
+   "severity": "medium"
+  },
+  {
+   "pattern": "小伙伴们",
+   "reason": "已被 AI 滥用的假亲切称呼",
+   "severity": "medium"
+  },
+  {
+   "pattern": "敲黑板",
+   "reason": "网感堆砌，machine 结构标记",
+   "severity": "medium"
+  },
+  {
+   "pattern": "划重点",
+   "reason": "同上",
+   "severity": "medium"
+  },
+  {
+   "pattern": "综上所述，我们可以看到",
+   "reason": "收束套话与元评论叠加",
+   "severity": "high"
+  },
+  {
+   "pattern": "在科技日新月异的今天",
+   "reason": "标准 AI 起手",
+   "severity": "high"
+  },
+  {
+   "pattern": "在这个信息爆炸的时代",
+   "reason": "比喻磨损开头的套话",
+   "severity": "high"
+  },
+  {
+   "pattern": "具体问题具体分析",
+   "reason": "伪平衡，等于没说",
+   "severity": "high"
+  },
+  {
+   "pattern": "任何事物都有两面性",
+   "reason": "伪平衡模板",
+   "severity": "high"
+  },
+  {
+   "pattern": "因人而异",
+   "reason": "回避判断，常见于 AI 结论",
+   "severity": "medium"
+  },
+  {
+   "pattern": "仅供参考",
+   "reason": "免责套话，稀释立场",
+   "severity": "medium"
+  },
+  {
+   "pattern": "抛砖引玉",
+   "reason": "谦辞套路，AI 用得过熟",
+   "severity": "medium"
+  },
+  {
+   "pattern": "不揣冒昧",
+   "reason": "谦辞套路",
+   "severity": "medium"
+  },
+  {
+   "pattern": "oaicite",
+   "reason": "联网模型内部标记泄漏，见到必删",
+   "severity": "high"
+  },
+  {
+   "pattern": "turn0search0",
+   "reason": "同上",
+   "severity": "high"
+  },
+  {
+   "pattern": "[cite: 1]",
+   "reason": "同上",
+   "severity": "high"
+  },
+  {
+   "pattern": "grok_card",
+   "reason": "同上",
+   "severity": "high"
+  },
+  {
+   "pattern": "参考资料",
+   "reason": "结尾自动附带的来源清单，若非真实需要则删",
+   "severity": "medium"
+  }
+ ],
+ "patterns": [
+  {
+   "id": "P01",
+   "name": "序数词分点骨架",
+   "regex": "(首先|其次|再次|最后)[，,、]",
+   "intent": "检测「首先/其次/最后」机械标段。若同一段落或相邻段落出现 ≥2 个，基本可判 AI；教程步骤场景应豁免。",
+   "example": "首先，要明确目标。其次，要打磨体验。最后，要持续迭代。",
+   "severity": "high",
+   "threshold": ">=2 次/千字"
+  },
+  {
+   "id": "P02",
+   "name": "三短句排比",
+   "regex": "更[\\u4e00-\\u9fa5]{1,4}[、，][^。；\\n]{0,20}更[\\u4e00-\\u9fa5]{1,4}[、，][^。；\\n]{0,20}更[\\u4e00-\\u9fa5]{1,4}",
+   "intent": "检测「更X、更Y、更Z」式三连排比，这是生成式中文的招牌结构。",
+   "example": "更智能、更高效、更人性化。",
+   "severity": "high",
+   "threshold": ">=1 次/千字"
+  },
+  {
+   "id": "P03",
+   "name": "不仅而且递进排比",
+   "regex": "不仅[^。；\\n]{0,40}(而且|还|同时)[^。；\\n]{0,40}(而且|还|同时)",
+   "intent": "检测「不仅…而且…同时…」三重递进堆叠，欧化关联词成段使用。",
+   "example": "不仅提升了效率，而且降低了成本，同时还增强了体验。",
+   "severity": "high",
+   "threshold": ">=1 次/千字"
+  },
+  {
+   "id": "P04",
+   "name": "不是而是对仗",
+   "regex": "不是[^。；\\n]{0,30}而是[^。；\\n]{0,30}",
+   "intent": "检测 not A but B 骨架。单次可接受，全文 ≥2 次视为机器手笔。",
+   "example": "它不是一次产品更新，而是一次思维方式的革命。",
+   "severity": "high",
+   "threshold": ">=2 次/全文"
+  },
+  {
+   "id": "P05",
+   "name": "是X是X更是X升华排比",
+   "regex": "是[^。；\\n]{1,12}[，,][^。；\\n]{0,10}是[^。；\\n]{1,12}[，,][^。；\\n]{0,10}(更是|也是)[^。；\\n]{1,12}",
+   "intent": "检测句尾强行升维的固定模板。",
+   "example": "这是一次尝试，是一次突破，更是一次对未来的重新想象。",
+   "severity": "high",
+   "threshold": ">=1 次/全文"
+  },
+  {
+   "id": "P06",
+   "name": "破折号插入语",
+   "regex": "——[^。\\n]{0,40}——",
+   "intent": "检测同一句内成对破折号插入语。破折号是当前中文 AI 文最扎眼的标点指纹。",
+   "example": "这不是小事——而是每个写作者都需要的——那种确定性。",
+   "severity": "high",
+   "threshold": "全篇 >1 处，或单段 >=2 处"
+  },
+  {
+   "id": "P07",
+   "name": "破折号密度",
+   "regex": "——",
+   "intent": "统计破折号总密度；一段出现两次以上基本可判机器手笔。",
+   "example": "它只做一件事——收尾。这很重要——真的。",
+   "severity": "high",
+   "threshold": ">=2 次/段 或 >=3 次/千字"
+  },
+  {
+   "id": "P08",
+   "name": "形容词加冒号替读者下判断",
+   "regex": "(逻辑|问题|原因|结论|答案|关键|重点)(很|非常|十分|其实)?(清晰|直接|简单|明确|明显|扎心)[：:]",
+   "intent": "检测「形容词+冒号」结构，AI 爱先替读者定性再给内容。",
+   "example": "逻辑很清晰：先建索引，再查询。",
+   "severity": "medium",
+   "threshold": ">=1 次/千字"
+  },
+  {
+   "id": "P09",
+   "name": "冒号清单引导",
+   "regex": "(包括|如下|以下几点|以下几个方面|以下内容)[：:]",
+   "intent": "检测「包括以下几点：」式冒号清单，一句话能说清的被拆成列表。",
+   "example": "该方案的优势包括以下几点：降低成本、提升效率、改善体验。",
+   "severity": "medium",
+   "threshold": ">=1 次/千字"
+  },
+  {
+   "id": "P10",
+   "name": "emoji与图标段头",
+   "regex": "[\\U0001F300-\\U0001FAFF]|[\\u2600-\\u27BF]|[\\u2B00-\\u2BFF]|【[^】\\n]{1,12}】|👉|🔥|💡|✅|❌|⚠️",
+   "intent": "检测 emoji、方括号段头与引导符号。已改为纯 Python re 可编译写法（\\U0001F300 等），不需要第三方 regex 模块。",
+   "example": "💡 小贴士：记得备份。【核心观点】体验决定成败。",
+   "severity": "high",
+   "threshold": ">=1 次/千字（社交场景放宽至 3）"
+  },
+  {
+   "id": "P11",
+   "name": "过度加粗",
+   "regex": "\\*\\*[^*\\n]{12,}\\*\\*|\\*\\*[^*\\n]+\\*\\*[^\\n]{0,20}\\*\\*[^*\\n]+\\*\\*",
+   "intent": "检测超过 12 字的整句加粗，或一句内多次加粗。",
+   "example": "我们提供**一站式的全链路解决方案**，帮助企业**降本增效**。",
+   "severity": "medium",
+   "threshold": ">3 处/千字 或 单句 >=2 处"
+  },
+  {
+   "id": "P12",
+   "name": "bullet point 依赖",
+   "regex": "(?m)^\\s*[-*+]\\s+.+$",
+   "intent": "统计项目符号行密度。散文场景下整句列点即 AI 排版习惯。",
+   "example": "- 优点是快\n- 缺点是贵\n- 建议先试",
+   "severity": "medium",
+   "threshold": ">5 行/千字（教程清单豁免）"
+  },
+  {
+   "id": "P13",
+   "name": "过度小标题",
+   "regex": "(?m)^#{2,4}\\s+",
+   "intent": "统计 Markdown 小标题密度，检测「每两三句挂一个标题」。",
+   "example": "## 一、什么是AI味\n## 二、AI味的表现",
+   "severity": "medium",
+   "threshold": ">2 个/千字（文档豁免）"
+  },
+  {
+   "id": "P14",
+   "name": "罗马数字伪权威标题",
+   "regex": "(?m)^\\s*(一|二|三|四|五|六|七|八|九|十)[、.]\\s*\\S+",
+   "intent": "检测非论文却使用「一、引言；二、背景」式编号标题。",
+   "example": "一、引言；二、研究背景；三、结论",
+   "severity": "medium",
+   "threshold": ">=3 处/全文"
+  },
+  {
+   "id": "P15",
+   "name": "动词名词化进行句式",
+   "regex": "(对|就)[^。；\\n]{1,20}(进行|加以|给予|予以|实施)[^。；\\n]{0,10}(了)?[\\u4e00-\\u9fa5]{2,6}",
+   "intent": "检测「对X进行Y」结构，把动词名词化再用空动词激活。",
+   "example": "我们对现有算法进行了优化，使响应速度得到了显著提升。",
+   "severity": "high",
+   "threshold": ">=1 次/千字"
+  },
+  {
+   "id": "P16",
+   "name": "起到发挥作用句式",
+   "regex": "(起到|发挥了|起到了|产生)[^。；\\n]{0,12}(作用|影响|效果|意义)",
+   "intent": "检测空壳动词短语，用「起到…作用」代替具体动作。",
+   "example": "这次培训起到了很好的促进作用。",
+   "severity": "high",
+   "threshold": ">=1 次/千字"
+  },
+  {
+   "id": "P17",
+   "name": "使得到被动提升",
+   "regex": "使[^。；\\n]{1,15}(得到|获得|受到)[^。；\\n]{0,10}(提升|改善|优化|提高|增强|关注)",
+   "intent": "检测「使X得到Y」机翻被动结构。",
+   "example": "使系统的响应速度得到了显著提升。",
+   "severity": "high",
+   "threshold": ">=1 次/千字"
+  },
+  {
+   "id": "P18",
+   "name": "对于而言书面框架",
+   "regex": "(对于|就)[^。；\\n]{1,15}(而言|来说)[，,]",
+   "intent": "检测 as for / with regard to 直译框架。",
+   "example": "对于中小企业而言，成本控制是生存关键。",
+   "severity": "medium",
+   "threshold": ">=2 次/千字"
+  },
+  {
+   "id": "P19",
+   "name": "作为一个开头",
+   "regex": "(?m)^[^\\n]{0,6}作为一个[^。；\\n]{1,20}(的人|者|开发者|设计师|妈妈|父亲)[，,]",
+   "intent": "检测 As a... 直译开头。",
+   "example": "作为一个做了五年后端的人，我认为这个方案有风险。",
+   "severity": "medium",
+   "threshold": ">=1 次/全文"
+  },
+  {
+   "id": "P20",
+   "name": "之一结尾",
+   "regex": "[\\u4e00-\\u9fa5]{2,12}之一[。！]",
+   "intent": "检测 one of the... 直译，中文常可删「之一」。",
+   "example": "这是我们今年最重要的更新之一。",
+   "severity": "medium",
+   "threshold": ">=2 次/千字"
+  },
+  {
+   "id": "P21",
+   "name": "无源权威铺垫",
+   "regex": "(研究表明|数据显示|调查显示|业内普遍认为|专家指出|有专家认为|据统计)[，,]",
+   "intent": "检测空挂权威。需人工核实是否给出具体研究/机构/年份；无出处即高危。",
+   "example": "研究表明，多任务处理会降低工作效率。",
+   "severity": "high",
+   "threshold": ">=1 次/千字"
+  },
+  {
+   "id": "P22",
+   "name": "伪平衡句式",
+   "regex": "(既要[^。；\\n]{0,20}也要|任何(事物|事情)都有两面|具体问题具体分析|不能一概而论|因人而异|视情况而定)",
+   "intent": "检测不下判断的伪平衡结论，这是最本质的 AI 味之一。",
+   "example": "我们既要看到AI的机遇，也要正视它的挑战。",
+   "severity": "high",
+   "threshold": ">=1 次/全文"
+  },
+  {
+   "id": "P23",
+   "name": "四字成语密集堆叠",
+   "regex": "[\\u4e00-\\u9fa5]{4}[、，][\\u4e00-\\u9fa5]{4}[、，][\\u4e00-\\u9fa5]{4}",
+   "intent": "检测一句内三个四字格并列，AI 中文的招牌特征。",
+   "example": "功能强大、操作简便、界面美观。",
+   "severity": "high",
+   "threshold": ">=1 次/千字"
+  },
+  {
+   "id": "P24",
+   "name": "意义拔高句式",
+   "regex": "(具有|有着)(里程碑|划时代|历史性|重大|深远)[^。；\\n]{0,6}(意义|影响)|标志着[^。；\\n]{0,20}(新篇章|新起点|新时代)",
+   "intent": "检测把普通事说成历史事件的新闻通稿套话。",
+   "example": "这具有里程碑式的意义，标志着行业新篇章的开启。",
+   "severity": "high",
+   "threshold": ">=1 次/全文"
+  },
+  {
+   "id": "P25",
+   "name": "收尾鸡汤口号",
+   "regex": "(让我们一起|携手(前行|共进|同行)|共创(美好|未来)|未来可期|拭目以待|大有可为|充满无限可能|愿(我们|你|每一个)|不负韶华|向阳而生|奔赴山海)",
+   "intent": "检测结尾强行升华、喊口号、灌鸡汤。",
+   "example": "让我们一起努力，共创美好未来！",
+   "severity": "high",
+   "threshold": ">=1 次/全文"
+  },
+  {
+   "id": "P26",
+   "name": "客服助手式收尾",
+   "regex": "(希望(本文|以上|这些)(信息)?(能|对)(够)?(帮|对)(到你|您)|如有(任何)?(疑问|问题)请?(随时)?(咨询|联系|告知)|仅供参考|不当之处敬请指正|欢迎(在评论区|留言|交流|讨论))",
+   "intent": "检测客服/助手对话语料残留。",
+   "example": "希望以上信息对您有所帮助，如有疑问请随时咨询。",
+   "severity": "high",
+   "threshold": ">=1 次/全文"
+  },
+  {
+   "id": "P27",
+   "name": "元评论预告",
+   "regex": "(本文将|在本文中|接下来[，,]?(我|我们)?(将|会|来)|下面[，,]?(我)?们?来(看|讲|说)|在(开始|进入正题)之前|让我们(来)?(看看|探讨|分析)|我想说的是|以下是(几点|几个))",
+   "intent": "检测自我指涉式导览，读者要内容不要目录。",
+   "example": "接下来，我将从三个维度为大家详细分析。",
+   "severity": "medium",
+   "threshold": ">=1 次/千字"
+  },
+  {
+   "id": "P28",
+   "name": "附和谄媚开头",
+   "regex": "(?m)^(好的|当然可以|明白了|问得好|这是一个非常好的问题|你说得对|确实如此)[，,！!。]|^以下是(为你)?(改写|整理|总结)",
+   "intent": "检测聊天对话口气被带进成稿。",
+   "example": "好的，下面是为你改写后的版本：",
+   "severity": "medium",
+   "threshold": ">=1 次/全文"
+  },
+  {
+   "id": "P29",
+   "name": "机器token残留",
+   "regex": "(oaicite|turn\\d+(search|view|fetch)\\d*|\\[cite:\\s*\\d+\\]|grok_card|ppl-ai-file-upload|【\\d+†[^】]*】|\\[\\d+\\]\\[\\d+\\])",
+   "intent": "检测联网/对话模型内部标记与无据角标泄漏，属最死的机器痕迹。",
+   "example": "根据最新研究，AI将改变教育[1][2]。",
+   "severity": "high",
+   "threshold": ">=1 次/全文"
+  },
+  {
+   "id": "P30",
+   "name": "段落分割线与提示框",
+   "regex": "(?m)^[ \\t]*(---|\\*\\*\\*)[ \\t]*$|^[ \\t]*>[ \\t]*\\S+",
+   "intent": "检测段落间分割线与引用提示框滥用（Markdown 表格线需另行排除）。",
+   "example": "（正文）\n---\n（正文）",
+   "severity": "low",
+   "threshold": ">2 处/千字"
+  },
+  {
+   "id": "P31",
+   "name": "连接词密度",
+   "regex": "(此外|与此同时|更重要的是|不仅如此|除此之外|然而|因此|从而|与此同时|首先|其次|最后)",
+   "intent": "统计连接词总密度，人类中文写作的显性连接词使用率显著低于 AI。",
+   "example": "此外，它还支持多语言。与此同时，它也具备纠错能力。更重要的是，它很快。",
+   "severity": "medium",
+   "threshold": ">12 次/千字"
+  },
+  {
+   "id": "P32",
+   "name": "同义词循环换称呼",
+   "regex": "(该|这)(款|个|套)?(模型|系统|工具|方案|助手|引擎|平台)[^。；\\n]{0,25}(该|这)(款|个|套)?(模型|系统|工具|方案|助手|引擎|平台)",
+   "intent": "检测同一对象在同一句内换多个称呼，英文避重复规则误迁移。",
+   "example": "该工具支持批量处理，这套系统还能对接API，这个助手可以自动纠错。",
+   "severity": "medium",
+   "threshold": "同一句内 >=2 个不同称呼"
+  },
+  {
+   "id": "P33",
+   "name": "被字句滥用",
+   "regex": "被[^。；\\n]{1,15}(所)?[\\u4e00-\\u9fa5]{1,4}(了|着)",
+   "intent": "检测被动句密度，中文偏好主动与省略施动者。",
+   "example": "这个问题已经被我们很好地解决了。",
+   "severity": "medium",
+   "threshold": ">3 次/千字"
+  },
+  {
+   "id": "P34",
+   "name": "过度程度副词",
+   "regex": "(非常|十分|极其|相当|格外|尤为|极度|愈发|越来越|真正地|切实|实实在在地)",
+   "intent": "统计程度副词密度，AI 用程度副词弥补细节缺失。",
+   "example": "这个功能非常实用，十分高效，极其方便。",
+   "severity": "medium",
+   "threshold": ">8 次/千字"
+  },
+  {
+   "id": "P35",
+   "name": "中英夹杂未译",
+   "regex": "[\\u4e00-\\u9fa5]{1,6}\\s?[（(]?[a-zA-Z]{3,}[）)]?|[\\u4e00-\\u9fa5]{2,}的\\s?[a-zA-Z]{3,}",
+   "intent": "检测面向普通读者稿子里的英文残留与双语标注。技术读者场景应豁免。",
+   "example": "我们做了一个 sanity check，发现这个 feature 还在 beta。",
+   "severity": "medium",
+   "threshold": ">3 处/千字（技术稿豁免）"
+  },
+  {
+   "id": "P36",
+   "name": "开头宏大背景",
+   "regex": "(?m)^[^\\n]{0,10}(随着[^，,\\n]{2,20}(的)?(不断)?(发展|进步|普及|兴起)|在当今|在(这个|这样)?[^，,\\n]{0,10}(时代|背景下|浪潮中)|近年来[，,])",
+   "intent": "检测首段宏大背景起手，第一段可套用到任何主题。",
+   "example": "随着人工智能技术的不断发展，越来越多的行业开始应用AI。",
+   "severity": "high",
+   "threshold": ">=1 次/全文（命中首段即高危）"
+  }
+ ]
+}
