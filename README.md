@@ -4,9 +4,11 @@
 
 在小程序里粘贴一段疑似 AI 写的中文，返回「AI 味体检报告」和「改写后的人话」。
 
+> **本仓库只包含后端。** 小程序前端是独立项目，通过 `wx.cloud.callContainer`
+> 调用这里的 `/api/*`，两边只靠下面第六节的接口契约耦合。
+
 ```
-miniprogram/   微信原生小程序前端（4 个页面，无 UI 库、无构建）
-deai/          去 AI 味应用（引擎 + 5 个 API）
+deai/          去 AI 味应用（引擎 + 5 个 API + 异步任务）
 wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 ```
 
@@ -67,14 +69,12 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 │   │   ├── llm.py              OpenAI 兼容客户端（纯标准库）
 │   │   ├── prompts.py          两版 system prompt
 │   │   ├── textutil.py         分句 / 标点清理 / 节奏统计
-│   │   └── data/rules.json     177 条替换 + 95 条标记 + 36 条结构正则
+│   │   └── lexicon/rules.json  177 条替换 + 95 条标记 + 36 条结构正则
 │   ├── views.py                5 个接口，统一响应信封
 │   ├── models.py               RewriteTask / QuotaUsage
 │   ├── auth.py                 从云托管请求头取 openid
 │   ├── quota.py                每日额度
 │   └── tasks.py                后台线程池 + 超时判失败
-├── miniprogram/                ★ 微信小程序前端
-│   └── config.js               ★ 唯一需要手改的前端文件
 ├── scripts/
 │   ├── dev.sh                  本地一键起服务
 │   └── smoke_api.py            接口端到端冒烟（无需联网）
@@ -150,19 +150,19 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 5. **发布**：保存后发布版本，访问 `https://<域名>/api/health` 确认
    `llmConfigured: true`。
 
-6. **小程序**：把环境 ID 与服务名填进 `miniprogram/config.js`：
+6. **小程序前端**：前端是**独立项目**，不在本仓库。在那边配置：
 
    ```js
    module.exports = {
-     CLOUD_ENV: 'prod-xxxx',   // 第 1 步的环境 ID
+     CLOUD_ENV: 'prod-xxxx',   // 第 1 步的环境 ID（不是环境名）
      SERVICE_NAME: 'deai-api', // 第 2 步的服务名
    }
    ```
 
-   再把 `project.config.json` 的 `appid` 换成你的，并在小程序后台把
-   **基础库最低版本设为 ≥ 2.23.0**（否则 `callContainer` 不可用）。
+   并把小程序后台的**基础库最低版本设为 ≥ 2.23.0**（否则 `callContainer` 不可用）。
+   前端不需要配「服务器域名」——`callContainer` 免域名校验、免备案。
 
-7. **不需要**配「服务器域名」——`callContainer` 免域名校验、免备案。
+7. **联调**：在开发者工具里跑一次「关于」页的配置自检，确认能打通。
 
 > ⚠️ `container.config.json` 只在「控制台一键模板部署」那一次生效；自己新建服务 +
 > 传代码包时它会被忽略，端口/规格/环境变量都要在控制台手填。

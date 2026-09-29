@@ -9,8 +9,7 @@ README.md
 .env
 .env.example
 
-# 小程序前端与本地脚本不进后端镜像
-miniprogram/
+# 本地开发脚本与测试不进后端镜像
 scripts/
 tests/
 docs/

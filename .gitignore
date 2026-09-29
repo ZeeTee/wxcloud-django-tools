@@ -141,9 +141,5 @@ dmypy.json
 /logs/
 /staticfiles/
 
-# 小程序：开发者工具的私有配置（含个人设置），不应提交
-miniprogram/project.private.config.json
-miniprogram/miniprogram_npm/
-
 # 本地验证用的依赖目录（pip --target 安装）
 .deps/
