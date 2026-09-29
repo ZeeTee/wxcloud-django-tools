@@ -199,6 +199,9 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 | `LLM_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI 兼容端点 |
 | `LLM_MODEL` | `deepseek-chat` | 模型名 |
 | `LLM_TIMEOUT` | `50` | 秒，会被夹到 ≤55 |
+| `LLM_PRICE_CACHE_IN` | `0.04` | 缓存命中输入单价（元/百万 token） |
+| `LLM_PRICE_IN` | `2.0` | 缓存未命中输入单价（元/百万 token） |
+| `LLM_PRICE_OUT` | `8.0` | 输出单价（元/百万 token） |
 | `DJANGO_SECRET_KEY` | 不安全默认值 | **生产必须换** |
 | `DJANGO_DEBUG` | `false` | |
 | `DJANGO_ALLOWED_HOSTS` | `*` | 云托管 Host 不固定，默认放开 |
@@ -228,6 +231,7 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 | POST | `/api/rewrite` | `{text, mode, skill}` → **立刻**返回 `taskId` + 规则结果 + 报告 + 额度 |
 | GET | `/api/task/<id>` | 轮询：`status` ∈ `pending/running/done/failed` |
 | GET | `/api/quota` | `{used, limit, remaining}` |
+| GET | `/api/usage` | 账户余额 + 今日用量汇总（任务数、token、费用） |
 
 * `mode` 取 `general`（通用）或 `xhs`（小红书），决定 skill 的场景覆盖。
 * `skill` 默认 `humanizer`；传 `legacy` 可回退到旧的硬编码提示词。传不存在的 skill 会返回
@@ -238,6 +242,32 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 
 错误码：`TEXT_EMPTY`、`TEXT_TOO_LONG`、`QUOTA_EXCEEDED`、`UNAUTHORIZED`、`SKILL_NOT_FOUND`、
 `LLM_NOT_CONFIGURED`、`TASK_NOT_FOUND`、`FORBIDDEN`、`METHOD_NOT_ALLOWED`、`INTERNAL`。
+
+### 费用怎么算的（重要）
+
+**用响应里的 `usage` 字段算，不用「调用前后查两次余额算差值」。** 后者实测行不通：
+
+* 余额接口只返回 **2 位小数**（`7.40`），一次 humanizer 调用约 **0.0014 元**，远小于最小刻度；
+* 实测调用 11704 token 后等 30 秒，余额纹丝不动。
+
+`usage` 随响应返回、精确到 token，还区分缓存命中与未命中。任务完成后
+`/api/task/<id>` 会带上：
+
+```json
+"usage": {
+  "promptTokens": 11591, "completionTokens": 73, "totalTokens": 11664,
+  "cacheHitTokens": 11392, "cacheHitRate": 0.9828, "costCNY": 0.0014
+}
+```
+
+**缓存是这个功能成本的关键**：humanizer 的 system prompt 固定不变，实测
+**缓存命中率 98%**，而缓存命中价与未命中价**差 50 倍**。响应里也给出了
+`breakdown`（缓存命中/未命中/输出各占多少），便于定位成本去向。
+
+估算单价按 `LLM_PRICE_*` 环境变量算，默认取 DeepSeek 高峰价（宁可高估）；
+空闲时段是高峰的一半，要更准就按当前时段改。
+
+余额接口仍然保留（`/api/usage`），但只用于「够不够用」的粗粒度监控。
 
 ### 模板原有：计数器示例（保持原格式）
 

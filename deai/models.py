@@ -32,6 +32,13 @@ class RewriteTask(models.Model):
     llm_report = models.TextField(blank=True, default="")
     # 模型是否遵守了 <REPORT>/<REWRITTEN> 输出协议（容错解析成功时为 False）
     protocol_ok = models.BooleanField(default=True)
+    # token 用量与估算费用：取自响应的 usage 字段——精确、随响应返回、零额外请求。
+    # 不用「调用前后查两次余额算差值」：实测余额只有 2 位小数且更新滞后，
+    # 单次调用（约 0.0007 元）的差值恒为 0。
+    prompt_tokens = models.IntegerField(default=0)
+    completion_tokens = models.IntegerField(default=0)
+    cache_hit_tokens = models.IntegerField(default=0)
+    cost_cny = models.DecimalField(max_digits=12, decimal_places=6, default=0)
     error = models.TextField(blank=True, default="")
     model_name = models.CharField(max_length=64, blank=True, default="")
     warnings = models.TextField(blank=True, default="")  # JSON 数组字符串

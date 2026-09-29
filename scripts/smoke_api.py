@@ -85,6 +85,23 @@ check("场景列表含 general/xhs", set(d.get("scenes", [])) == {"general", "xh
 humanizer = next((s for s in d.get("skills", []) if s.get("slug") == "humanizer"), {})
 check("humanizer 带版本号", bool(humanizer.get("version")), humanizer)
 
+print("\n=== 1.2 用量与余额 ===")
+r = client.get("/api/usage", **AUTH)
+check("GET /api/usage 返回 200", r.status_code == 200, r.status_code)
+d = r.json().get("data", {})
+check(
+    "返回余额或余额错误（假密钥下应为错误）",
+    ("balance" in d) or ("balanceError" in d),
+    list(d.keys()),
+)
+check("返回今日用量汇总", isinstance(d.get("today"), dict), list(d.keys()))
+today = d.get("today", {})
+check(
+    "今日用量字段齐全",
+    {"tasks", "done", "failed", "promptTokens", "completionTokens", "costCNY"} <= set(today),
+    today,
+)
+
 print("\n=== 1.5 模板原有功能（确认整合没有把它们改坏）===")
 r = client.get("/api/count", **AUTH)
 check("GET /api/count 返回 200", r.status_code == 200, r.status_code)

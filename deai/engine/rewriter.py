@@ -114,7 +114,7 @@ def rewrite(text: str, mode: str = "general", skill: str = DEFAULT_SKILL) -> dic
         _PROTOCOL_USER_MESSAGE.format(text=text) if use_protocol else build_user_message(text)
     )
 
-    raw = llm.chat(
+    result = llm.chat(
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
@@ -123,6 +123,7 @@ def rewrite(text: str, mode: str = "general", skill: str = DEFAULT_SKILL) -> dic
         temperature=0.9,
         max_tokens=max_tokens,
     )
+    raw = result.content
 
     if use_protocol:
         parsed = parse(raw)
@@ -137,16 +138,23 @@ def rewrite(text: str, mode: str = "general", skill: str = DEFAULT_SKILL) -> dic
         report = ""
         protocol_ok = True
 
+    usage = result.usage
+    cost = llm.estimate_cost(usage)
+
     return {
         "text": polished,
         "report": report,
         "warnings": check_fidelity(text, polished),
-        "model": cfg.model,
+        "model": result.model,
         "mode": scene,
         "skill": used_skill,
         "skillVersion": skill_version,
         "protocolOk": protocol_ok,
         "degraded": degraded,
+        # 用量与费用取自响应里的 usage，不用「余额两次查询算差值」——
+        # 实测余额只有 2 位小数且更新滞后，单次调用根本体现不出来（详见 llm.py）
+        "usage": usage,
+        "cost": cost,
     }
 
 

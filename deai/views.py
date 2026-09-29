@@ -22,6 +22,11 @@ from . import quota as quota_service
 from . import tasks
 from .auth import AuthError, get_identity
 from .engine import build_report, is_configured, rewrite_by_rules
+from django.db.models import Count, Sum
+from django.utils import timezone
+
+from .engine.llm import LLMError as LLMBalanceError
+from .engine.llm import get_balance
 from .models import RewriteTask
 from .skills import get_registry
 
@@ -164,6 +169,50 @@ def skills(request):
     return ok({"default": DEFAULT_SKILL, "scenes": list(VALID_MODES), "skills": items})
 
 
+@api("GET")
+def usage(request):
+    """账户余额 + 今日用量汇总。
+
+    ⚠️ 余额只保留 2 位小数，**不要**用它做单次调用的费用核算——实测一次
+    humanizer 调用约 0.0007 元，余额上看不出变化。单次费用请看
+    ``/api/task/<id>`` 返回的 ``usage.costCNY``（取自模型的 usage 字段）。
+    余额在这里只用于「够不够用」的粗粒度监控。
+    """
+    identity, err = _identity_or_error(request)
+    if err:
+        return err
+
+    payload: dict = {}
+
+    try:
+        payload["balance"] = get_balance()
+    except LLMBalanceError as exc:
+        payload["balanceError"] = str(exc)
+    except Exception:  # noqa: BLE001 - 余额查不到不该让整个接口失败
+        logger.exception("查询余额失败")
+        payload["balanceError"] = "查询余额失败"
+
+    today = timezone.now().date()
+    mine = RewriteTask.objects.filter(openid=identity, created_at__date=today)
+    done = mine.filter(status=RewriteTask.STATUS_DONE)
+    agg = done.aggregate(
+        prompt=Sum("prompt_tokens"),
+        completion=Sum("completion_tokens"),
+        cached=Sum("cache_hit_tokens"),
+        cost=Sum("cost_cny"),
+    )
+    payload["today"] = {
+        "tasks": mine.count(),
+        "done": done.count(),
+        "failed": mine.filter(status=RewriteTask.STATUS_FAILED).count(),
+        "promptTokens": agg["prompt"] or 0,
+        "completionTokens": agg["completion"] or 0,
+        "cacheHitTokens": agg["cached"] or 0,
+        "costCNY": float(agg["cost"] or 0),
+    }
+    return ok(payload)
+
+
 @api("POST")
 def analyze(request):
     """体检 + 规则改写。同步返回，毫秒级，不消耗额度。"""
@@ -275,6 +324,17 @@ def task_status(request, task_id: str):
         payload["llmReport"] = task.llm_report
         # 模型是否守住了 <REPORT>/<REWRITTEN> 协议（容错解析成功时为 False）
         payload["protocolOk"] = task.protocol_ok
+        # token 用量与估算费用
+        payload["usage"] = {
+            "promptTokens": task.prompt_tokens,
+            "completionTokens": task.completion_tokens,
+            "totalTokens": task.prompt_tokens + task.completion_tokens,
+            "cacheHitTokens": task.cache_hit_tokens,
+            "cacheHitRate": (
+                round(task.cache_hit_tokens / task.prompt_tokens, 4) if task.prompt_tokens else 0
+            ),
+            "costCNY": float(task.cost_cny or 0),
+        }
         try:
             payload["warnings"] = json.loads(task.warnings or "[]")
         except json.JSONDecodeError:

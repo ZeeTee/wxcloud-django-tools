@@ -15,6 +15,7 @@ import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 
 from django.conf import settings
 from django.utils import timezone
@@ -57,6 +58,8 @@ def _run(task_id: str) -> None:
         _fail(task_id, "服务端处理失败，请稍后重试", started)
         logger.exception("任务 %s 未预期异常: %s", task_id, exc)
     else:
+        usage = result.get("usage")
+        cost = result.get("cost") or {}
         RewriteTask.objects.filter(pk=task_id).update(
             status=RewriteTask.STATUS_DONE,
             llm_text=result["text"],
@@ -68,15 +71,23 @@ def _run(task_id: str) -> None:
             skill=result.get("skill") or task.skill,
             skill_version=result.get("skillVersion") or "",
             protocol_ok=bool(result.get("protocolOk", True)),
+            prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+            completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
+            cache_hit_tokens=getattr(usage, "cache_hit_tokens", 0) or 0,
+            cost_cny=Decimal(str(cost.get("costCNY") or 0)),
             error="",
             elapsed_ms=int((time.monotonic() - started) * 1000),
         )
         logger.info(
-            "任务 %s 完成，skill=%s/%s protocol_ok=%s 耗时 %dms",
+            "任务 %s 完成，skill=%s/%s protocol_ok=%s tokens=%s+%s 缓存命中=%s 费用≈%s元 耗时 %dms",
             task_id,
             result.get("skill"),
             result.get("skillVersion"),
             result.get("protocolOk"),
+            getattr(usage, "prompt_tokens", 0),
+            getattr(usage, "completion_tokens", 0),
+            getattr(usage, "cache_hit_tokens", 0),
+            cost.get("costCNY"),
             int((time.monotonic() - started) * 1000),
         )
 
