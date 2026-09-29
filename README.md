@@ -27,6 +27,18 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 | 规则层改写 | 安全替换/删除高置信度的 AI 套话 | 毫秒级 | 否 |
 | AI 深度改写 | 调大模型重写全文（拆长句、调节奏、给判断） | 10-60 秒 | 每天限额 |
 
+其中「AI 深度改写」由 **skill** 驱动（当前是 Humanizer v4.1）：
+
+* skill 原文是为**有文件工具的 agent** 写的，正文里到处写着「加载 `references/banned-words.md`」。
+  产品后台是单向 LLM 调用，模型没法自己读文件。所以 `deai/skills/registry.py` 会先**编译**它：
+  把加载指令改写成附录引用、把 references 正文注入 prompt、追加场景覆盖与输出协议。
+  **漏掉这一步，模型就会看到一条它无法执行的指令。**
+* 输出用 `<REPORT>` / `<REWRITTEN>` 标签分隔，**不用 markdown 标题**——模型完全可能在改写正文里
+  写出同样的标题，导致解析错位。解析器多级容错，最差情况整段当正文，绝不因解析失败就丢弃产出。
+* 编译后的 system prompt 约 1.9 万字（含禁用词表与结构清单，不含示例库）。示例库标了 `fewshot`，
+  暂不注入以控制成本，需要时改 `skill.json` 即可。
+* `skill=legacy` 保留旧硬编码提示词作为**灰度与故障回退通道**，skill 出问题可一键切回。
+
 **2. 修掉模板里不能上生产的地方**：
 
 | 原模板 | 问题 | 现在 |
@@ -65,12 +77,20 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 │   ├── engine/                 引擎（不依赖 Django、不联网，可单独测试）
 │   │   ├── rules.py            词库加载、命中检测、可安全执行的替换
 │   │   ├── detector.py         评分与体检报告
-│   │   ├── rewriter.py         LLM 编排 + 保真校验
+│   │   ├── rewriter.py         LLM 编排 + 保真校验 + skill 调度
 │   │   ├── llm.py              OpenAI 兼容客户端（纯标准库）
-│   │   ├── prompts.py          两版 system prompt
+│   │   ├── prompts.py          旧版硬编码 prompt（legacy 回退用）
 │   │   ├── textutil.py         分句 / 标点清理 / 节奏统计
 │   │   └── lexicon/rules.json  177 条替换 + 95 条标记 + 36 条结构正则
-│   ├── views.py                5 个接口，统一响应信封
+│   ├── skills/                 ★ skill 子系统
+│   │   ├── registry.py         扫描并编译 skill（把「加载 references」编译成注入）
+│   │   ├── output.py           解析 <REPORT>/<REWRITTEN> 协议（多级容错）
+│   │   └── humanizer/          Humanizer v4.1
+│   │       ├── SKILL.md            主提示词（与 agent 版保持一致）
+│   │       ├── skill.json          产品化清单：注入规则 / 场景 / 轮次
+│   │       ├── references/         禁用词表 · 结构清单 · 示例库
+│   │       └── overrides/          场景覆盖（general / xhs）
+│   ├── views.py                6 个接口，统一响应信封
 │   ├── models.py               RewriteTask / QuotaUsage
 │   ├── auth.py                 从云托管请求头取 openid
 │   ├── quota.py                每日额度
@@ -78,7 +98,9 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 ├── scripts/
 │   ├── dev.sh                  本地一键起服务
 │   └── smoke_api.py            接口端到端冒烟（无需联网）
-└── tests/test_engine.py        引擎单测 43 项（不需要 Django）
+└── tests/
+    ├── test_engine.py          引擎单测（不需要 Django）
+    └── test_skills.py          skill 编译与输出解析单测
 ```
 
 ---
@@ -200,14 +222,21 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/health` | 探活，附带 `llmConfigured` |
+| GET | `/api/health` | 探活，附带 `llmConfigured` 与已加载的 skill |
+| GET | `/api/skills` | 列出可用 skill（前端应据此动态渲染，不要写死选项） |
 | POST | `/api/analyze` | `{text}` → 体检报告 + 规则改写，同步毫秒级，不消耗额度 |
-| POST | `/api/rewrite` | `{text, mode}` → **立刻**返回 `taskId` + 规则结果 + 报告 + 额度 |
+| POST | `/api/rewrite` | `{text, mode, skill}` → **立刻**返回 `taskId` + 规则结果 + 报告 + 额度 |
 | GET | `/api/task/<id>` | 轮询：`status` ∈ `pending/running/done/failed` |
 | GET | `/api/quota` | `{used, limit, remaining}` |
 
-`mode` 取 `general`（通用）或 `xhs`（小红书）。
-错误码：`TEXT_EMPTY`、`TEXT_TOO_LONG`、`QUOTA_EXCEEDED`、`UNAUTHORIZED`、
+* `mode` 取 `general`（通用）或 `xhs`（小红书），决定 skill 的场景覆盖。
+* `skill` 默认 `humanizer`；传 `legacy` 可回退到旧的硬编码提示词。传不存在的 skill 会返回
+  `SKILL_NOT_FOUND`——**刻意不静默兜底**，否则用户以为在用新 skill、实际跑的是别的，极难排查。
+* 任务完成时额外返回：`skill`、`skillVersion`、`llmReport`（模型产出的检测报告）、
+  `protocolOk`。`protocolOk: false` 表示模型没遵守输出协议、走了容错解析——不影响使用，
+  但值得监控：它变多说明 prompt 需要调整。
+
+错误码：`TEXT_EMPTY`、`TEXT_TOO_LONG`、`QUOTA_EXCEEDED`、`UNAUTHORIZED`、`SKILL_NOT_FOUND`、
 `LLM_NOT_CONFIGURED`、`TASK_NOT_FOUND`、`FORBIDDEN`、`METHOD_NOT_ALLOWED`、`INTERNAL`。
 
 ### 模板原有：计数器示例（保持原格式）

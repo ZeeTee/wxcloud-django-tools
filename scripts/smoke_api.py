@@ -71,6 +71,19 @@ check("GET /api/health 返回 200", r.status_code == 200, r.status_code)
 body = r.json()
 check("health 信封正确", body.get("ok") is True and "llmConfigured" in body.get("data", {}), body)
 check("health 识别到已配置密钥", body["data"]["llmConfigured"] is True, body)
+check("health 暴露了已加载的 skill", "humanizer" in body["data"].get("skills", []), body["data"].get("skills"))
+
+print("\n=== 1.1 Skill 列表 ===")
+r = client.get("/api/skills", **AUTH)
+check("GET /api/skills 返回 200", r.status_code == 200, r.status_code)
+d = r.json().get("data", {})
+slugs = [s.get("slug") for s in d.get("skills", [])]
+check("含 humanizer", "humanizer" in slugs, slugs)
+check("含 legacy 回退项", "legacy" in slugs, slugs)
+check("默认 skill 是 humanizer", d.get("default") == "humanizer", d.get("default"))
+check("场景列表含 general/xhs", set(d.get("scenes", [])) == {"general", "xhs"}, d.get("scenes"))
+humanizer = next((s for s in d.get("skills", []) if s.get("slug") == "humanizer"), {})
+check("humanizer 带版本号", bool(humanizer.get("version")), humanizer)
 
 print("\n=== 1.5 模板原有功能（确认整合没有把它们改坏）===")
 r = client.get("/api/count", **AUTH)
@@ -111,6 +124,18 @@ r = post_json("/api/analyze", {}, **AUTH)
 check("缺字段 -> 400 TEXT_EMPTY", r.status_code == 400 and r.json()["error"]["code"] == "TEXT_EMPTY", r.json())
 r = client.get("/api/analyze", **AUTH)
 check("GET 打 POST 接口 -> 405 且是 JSON", r.status_code == 405 and r.json()["error"]["code"] == "METHOD_NOT_ALLOWED", r.status_code)
+
+print("\n=== 3.5 skill 参数校验 ===")
+r = post_json("/api/rewrite", {"text": AI_TEXT, "skill": "no-such-skill"}, **AUTH)
+check(
+    "不存在的 skill -> 400 SKILL_NOT_FOUND（不静默兜底）",
+    r.status_code == 400 and r.json()["error"]["code"] == "SKILL_NOT_FOUND",
+    r.json(),
+)
+check(
+    "非法 skill 不消耗额度（校验发生在扣额度之前）",
+    client.get("/api/quota", **AUTH).json()["data"]["used"] == 0,
+)
 
 print("\n=== 4. 额度 ===")
 r = client.get("/api/quota", **AUTH)

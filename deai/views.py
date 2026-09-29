@@ -23,11 +23,15 @@ from . import tasks
 from .auth import AuthError, get_identity
 from .engine import build_report, is_configured, rewrite_by_rules
 from .models import RewriteTask
+from .skills import get_registry
 
 logger = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 256 * 1024
 VALID_MODES = ("general", "xhs")
+# 除了 registry 里扫描到的 skill，额外允许 legacy（显式回退到旧硬编码提示词）
+EXTRA_SKILLS = ("legacy",)
+DEFAULT_SKILL = "humanizer"
 
 
 # ---------------------------------------------------------------------------
@@ -107,15 +111,57 @@ def _extract_text(data: dict):
     return text, None
 
 
+def _resolve_skill(raw: object) -> str | None:
+    """把请求里的 ``skill`` 解析成可用值；返回 None 表示该 skill 不存在。
+
+    这里刻意**不做静默兜底**：前端传了一个不存在的 skill，就应该明确报错，
+    否则用户以为自己在用新 skill，实际跑的是别的，出了问题极难排查。
+    """
+    name = str(raw or "").strip() or DEFAULT_SKILL
+    if name in EXTRA_SKILLS or get_registry().has(name):
+        return name
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 接口
 # ---------------------------------------------------------------------------
 
-
 @api("GET")
 def health(request):
-    """探活。顺带暴露「模型密钥是否配好」，方便部署后自查。"""
-    return ok({"status": "up", "llmConfigured": is_configured()})
+    """探活。顺带暴露「模型密钥是否配好」与已加载的 skill，方便部署后自查。"""
+    registry = get_registry()
+    return ok(
+        {
+            "status": "up",
+            "llmConfigured": is_configured(),
+            "defaultSkill": DEFAULT_SKILL,
+            "skills": [s.slug for s in registry.list()] + list(EXTRA_SKILLS),
+        }
+    )
+
+
+@api("GET")
+def skills(request):
+    """列出可用的 skill，供前端动态渲染选项。
+
+    前端不该把 general/xhs 写死 —— 加一个 skill 就应该自动出现在选项里。
+    """
+    _identity, err = _identity_or_error(request)
+    if err:
+        return err
+    items = [s.to_dict() for s in get_registry().list()]
+    items.append(
+        {
+            "slug": "legacy",
+            "name": "经典模式",
+            "version": "",
+            "description": "早期硬编码的提示词，保留用于对比与故障回退。",
+            "scenes": list(VALID_MODES),
+            "defaultScene": "general",
+        }
+    )
+    return ok({"default": DEFAULT_SKILL, "scenes": list(VALID_MODES), "skills": items})
 
 
 @api("POST")
@@ -163,6 +209,10 @@ def rewrite(request):
     if mode not in VALID_MODES:
         mode = "general"
 
+    skill = _resolve_skill(data.get("skill"))
+    if skill is None:
+        return fail("SKILL_NOT_FOUND", f"没有这个 skill：{data.get('skill')}", 400)
+
     if not is_configured():
         return fail("LLM_NOT_CONFIGURED", "服务端还没配置模型密钥，暂时无法深度改写", 503)
 
@@ -179,6 +229,7 @@ def rewrite(request):
         id=task_id,
         openid=identity,
         mode=mode,
+        skill=skill,
         source_text=text,
         rules_text=rules_text,
         status=RewriteTask.STATUS_PENDING,
@@ -218,6 +269,12 @@ def task_status(request, task_id: str):
     if task.status == RewriteTask.STATUS_DONE:
         payload["llmText"] = task.llm_text
         payload["model"] = task.model_name
+        payload["skill"] = task.skill
+        payload["skillVersion"] = task.skill_version
+        # skill 模式会额外产出检测报告；legacy 模式下是空字符串
+        payload["llmReport"] = task.llm_report
+        # 模型是否守住了 <REPORT>/<REWRITTEN> 协议（容错解析成功时为 False）
+        payload["protocolOk"] = task.protocol_ok
         try:
             payload["warnings"] = json.loads(task.warnings or "[]")
         except json.JSONDecodeError:

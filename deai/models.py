@@ -21,9 +21,17 @@ class RewriteTask(models.Model):
     openid = models.CharField(max_length=64, db_index=True)
     status = models.CharField(max_length=16, default=STATUS_PENDING, db_index=True)
     mode = models.CharField(max_length=16, default="general")
+    # 用哪个 skill 跑的（humanizer / legacy …）。记下来才能做事后归因：
+    # 同一段文本换 skill 效果差多少、哪个 skill 的失败率高。
+    skill = models.CharField(max_length=32, default="humanizer")
+    skill_version = models.CharField(max_length=16, blank=True, default="")
     source_text = models.TextField()
     rules_text = models.TextField(blank=True, default="")
     llm_text = models.TextField(blank=True, default="")
+    # skill 模式要求模型额外输出检测报告，存下来可以在结果页展示
+    llm_report = models.TextField(blank=True, default="")
+    # 模型是否遵守了 <REPORT>/<REWRITTEN> 输出协议（容错解析成功时为 False）
+    protocol_ok = models.BooleanField(default=True)
     error = models.TextField(blank=True, default="")
     model_name = models.CharField(max_length=64, blank=True, default="")
     warnings = models.TextField(blank=True, default="")  # JSON 数组字符串

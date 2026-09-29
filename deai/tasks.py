@@ -38,14 +38,18 @@ def submit(task_id: str) -> None:
 
 def _run(task_id: str) -> None:
     started = time.monotonic()
-    task = RewriteTask.objects.filter(pk=task_id).only("id", "source_text", "mode").first()
+    task = (
+        RewriteTask.objects.filter(pk=task_id)
+        .only("id", "source_text", "mode", "skill")
+        .first()
+    )
     if task is None:  # 任务被清理掉了
         return
 
     RewriteTask.objects.filter(pk=task_id).update(status=RewriteTask.STATUS_RUNNING)
 
     try:
-        result = llm_rewrite(task.source_text, task.mode)
+        result = llm_rewrite(task.source_text, task.mode, skill=task.skill)
     except LLMError as exc:
         _fail(task_id, str(exc), started)
         logger.warning("任务 %s 模型调用失败: %s", task_id, exc)
@@ -56,12 +60,25 @@ def _run(task_id: str) -> None:
         RewriteTask.objects.filter(pk=task_id).update(
             status=RewriteTask.STATUS_DONE,
             llm_text=result["text"],
+            llm_report=result.get("report") or "",
             warnings=json.dumps(result.get("warnings") or [], ensure_ascii=False),
             model_name=result.get("model", ""),
+            # 记下实际用的 skill 与版本：发生回退时这里会和请求的不一致，
+            # 正好是排查「为什么这次效果不一样」的线索
+            skill=result.get("skill") or task.skill,
+            skill_version=result.get("skillVersion") or "",
+            protocol_ok=bool(result.get("protocolOk", True)),
             error="",
             elapsed_ms=int((time.monotonic() - started) * 1000),
         )
-        logger.info("任务 %s 完成，耗时 %dms", task_id, int((time.monotonic() - started) * 1000))
+        logger.info(
+            "任务 %s 完成，skill=%s/%s protocol_ok=%s 耗时 %dms",
+            task_id,
+            result.get("skill"),
+            result.get("skillVersion"),
+            result.get("protocolOk"),
+            int((time.monotonic() - started) * 1000),
+        )
 
 
 def _fail(task_id: str, message: str, started: float) -> None:
