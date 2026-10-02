@@ -32,6 +32,9 @@ class RewriteTask(models.Model):
     llm_report = models.TextField(blank=True, default="")
     # 模型是否遵守了 <REPORT>/<REWRITTEN> 输出协议（容错解析成功时为 False）
     protocol_ok = models.BooleanField(default=True)
+    # 模型自报「补充了哪些原文没有的内容」。存下来是因为这是本功能最大的信任风险：
+    # 去 AI 味要求「具体化」，但硬约束是「不新增事实」，需要留给用户核对。
+    llm_added_facts = models.TextField(blank=True, default="")
     # token 用量与估算费用：取自响应的 usage 字段——精确、随响应返回、零额外请求。
     # 不用「调用前后查两次余额算差值」：实测余额只有 2 位小数且更新滞后，
     # 单次调用（约 0.0007 元）的差值恒为 0。

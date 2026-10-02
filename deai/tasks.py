@@ -92,6 +92,7 @@ def _run(task_id: str) -> None:
             skill=result.get("skill") or task.skill,
             skill_version=result.get("skillVersion") or "",
             protocol_ok=bool(result.get("protocolOk", True)),
+            llm_added_facts=result.get("addedFacts") or "",
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
             cache_hit_tokens=getattr(usage, "cache_hit_tokens", 0) or 0,

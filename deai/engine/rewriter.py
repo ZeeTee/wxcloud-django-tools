@@ -38,6 +38,17 @@ _PREFACE = re.compile(r"^\s*(以下是|下面是|这是)[^\n]{0,30}[:：]\s*\n+"
 _QUOTE_PAIRS = (("\u201c", "\u201d"), ("\u300c", "\u300d"), ('"', '"'), ("'", "'"))
 _NUMBER = re.compile(r"\d+(?:\.\d+)?")
 
+# 启发式：改写后新增的「具体化」痕迹。
+# 实测模型会补出原文没有的举例（「填表、整理、来回搬运数据」），这类内容最危险
+# ——读起来很具体，但全是编的。下面两条规则专门抓这种「凭空具体化」。
+# 三项以上的顿号列举
+_ENUM_RE = re.compile(r"[\u4e00-\u9fa5A-Za-z0-9]{2,12}(?:、[\u4e00-\u9fa5A-Za-z0-9]{2,12}){2,}")
+# 中文引号/书名号里包着的短语
+_QUOTED_RE = re.compile(r"[\u300c\u300e\u201c\"]([^\u300d\u300f\u201d\"]{2,30})[\u300d\u300f\u201d\"]")
+
+# 模型自报「没新增」的各种写法（与 skills/output.py 的判定保持一致）
+_NONE_FACT_CLAIMS = {"无", "无。", "没有", "没有。", "none", "n/a", "na", "-"}
+
 # skill 模式的 user message：指向系统提示里的输出协议
 _PROTOCOL_USER_MESSAGE = (
     "请按系统提示中的【输出协议】改写下面这段文字。\n\n"
@@ -59,8 +70,17 @@ def strip_wrapping(text: str) -> str:
     return t.strip()
 
 
-def check_fidelity(original: str, rewritten: str) -> list[str]:
-    """轻量保真校验，返回给用户看的人话提示（可能为空）。"""
+def check_fidelity(original: str, rewritten: str, added_facts: str = "") -> list[str]:
+    """保真校验，返回给用户看的人话提示（可能为空）。
+
+    三层检查，因为「去 AI 味」和「不新增事实」本质上是冲突的——skill 要求
+    「具体化、注入灵魂」，模型很容易编出听起来很具体的细节：
+
+    1. **数字守恒**：原文的数字不能在改写后消失；
+    2. **长度比**：暴涨（加了内容）或暴缩（删了信息）都要提醒；
+    3. **新增内容**：模型自报（``added_facts``）+ 启发式（新增的列举 / 引号短语）。
+       启发式会误报（改写本来就可能引入列举），所以措辞是「请核对」而不是断言。
+    """
     warnings: list[str] = []
     src = original.strip()
     dst = rewritten.strip()
@@ -76,6 +96,54 @@ def check_fidelity(original: str, rewritten: str) -> list[str]:
         warnings.append("改写后字数只有原文的 %d%%，可能删掉了信息" % round(ratio * 100))
     elif ratio > 1.9:
         warnings.append("改写后字数涨到原文的 %d%%，可能加了原文没有的内容" % round(ratio * 100))
+
+    warnings.extend(check_added_content(src, dst, added_facts))
+    return warnings
+
+
+def _missing_enum_items(original: str, rewritten: str) -> list[str]:
+    """找出改写里「原文找不到出处」的列举项。
+
+    不能整组字符串比对：原文写「批处理、快捷键和离线模式」，改写常常换成
+    「批处理、快捷键、离线模式」，连接词一变，整组就不相等了，会大面积误报。
+    所以拆成单项，用**前两个字**在原文里找子串——改写常给列举项加尾部修饰
+    （「离线模式」→「离线模式它都支持」），前缀匹配能容忍这个。
+    """
+    missing: list[str] = []
+    for enum in _ENUM_RE.findall(rewritten):
+        if enum in original:  # 整组原样出现，肯定不是新增
+            continue
+        for item in enum.split("、"):
+            item = item.strip()
+            if len(item) >= 2 and item[:2] not in original:
+                missing.append(item)
+    return missing
+
+
+def check_added_content(original: str, rewritten: str, added_facts: str = "") -> list[str]:
+    """检测「模型自行补充了原文没有的具体内容」。
+
+    两路信号：模型自己在报告里的自报，以及改写正文里新出现的具体化痕迹。
+    模型自报更可信（它知道自己在补什么），启发式用来兜住它不承认的情况。
+    启发式一定会误报，所以措辞是「确认一下」而不是断言。
+    """
+    warnings: list[str] = []
+
+    claim = (added_facts or "").strip()
+    if claim and claim.lower() not in _NONE_FACT_CLAIMS:
+        short = re.sub(r"\s+", " ", claim)[:120]
+        warnings.append("模型自报补充了原文没有的内容，请逐条核对：" + short)
+
+    missing = _missing_enum_items(original, rewritten)
+    if missing:
+        samples = "、".join(sorted(set(missing))[:4])
+        warnings.append("改写后出现了原文找不到出处的具体内容（" + samples + "），确认一下不是编的")
+
+    new_quotes = set(_QUOTED_RE.findall(rewritten)) - set(_QUOTED_RE.findall(original))
+    if new_quotes:
+        samples = "；".join(sorted(new_quotes)[:3])
+        warnings.append("改写后出现了原文没有的引述（" + samples + "），确认一下出处")
+
     return warnings
 
 
@@ -125,11 +193,13 @@ def rewrite(text: str, mode: str = "general", skill: str = DEFAULT_SKILL) -> dic
     )
     raw = result.content
 
+    added_facts = ""
     if use_protocol:
         parsed = parse(raw)
         polished = strip_wrapping(parsed.text)
         report = parsed.report
         protocol_ok = parsed.parsed
+        added_facts = parsed.added_facts
         if not protocol_ok:
             # 不阻断：容错解析已经给出可用正文，但要让它可见，便于观察模型稳定性
             logger.info("skill=%s 未按输出协议返回（fallback=%s）", used_skill, parsed.fallback)
@@ -144,7 +214,9 @@ def rewrite(text: str, mode: str = "general", skill: str = DEFAULT_SKILL) -> dic
     return {
         "text": polished,
         "report": report,
-        "warnings": check_fidelity(text, polished),
+        # 模型自报「新增了哪些原文没有的内容」，前端要原样展示给用户核对
+        "addedFacts": added_facts,
+        "warnings": check_fidelity(text, polished, added_facts),
         "model": result.model,
         "mode": scene,
         "skill": used_skill,
@@ -163,6 +235,7 @@ __all__ = [
     "resolve_system_prompt",
     "strip_wrapping",
     "check_fidelity",
+    "check_added_content",
     "LEGACY_SKILL",
     "DEFAULT_SKILL",
 ]

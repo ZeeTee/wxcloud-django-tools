@@ -246,8 +246,28 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 * `skill` 默认 `humanizer`；传 `legacy` 可回退到旧的硬编码提示词。传不存在的 skill 会返回
   `SKILL_NOT_FOUND`——**刻意不静默兜底**，否则用户以为在用新 skill、实际跑的是别的，极难排查。
 * 任务完成时额外返回：`skill`、`skillVersion`、`llmReport`（模型产出的检测报告）、
-  `protocolOk`。`protocolOk: false` 表示模型没遵守输出协议、走了容错解析——不影响使用，
-  但值得监控：它变多说明 prompt 需要调整。
+  `protocolOk`、`addedFacts`、`usage`。`protocolOk: false` 表示模型没遵守输出协议、
+  走了容错解析——不影响使用，但值得监控：它变多说明 prompt 需要调整。
+
+### 保真校验（这个功能最大的信任风险）
+
+「去 AI 味」要求**具体化、给判断**，硬约束却是**不新增事实**——两者本质冲突。实测模型确实
+会补出原文没有的细节：原文只说「繁琐的重复性工作」，它写成「填表、整理、来回搬运数据」。
+
+`warnings` 字段会给出三层提示：
+
+| 检查 | 说明 |
+| --- | --- |
+| 数字守恒 | 原文的数字不能在改写后消失 |
+| 长度比 | 暴涨（疑似加内容）或暴缩（疑似丢信息） |
+| **新增内容** | 模型自报（`addedFacts`）+ 启发式（列举项 / 引号短语在原文找不到出处） |
+
+`addedFacts` 是让模型在 `<REPORT>` 里自报「补充了哪些原文没有的内容」。协议里明确要求
+诚实申报，且**「没写这一行」与「写了无」是两件事**——前者是未知，不会被当成没问题。
+
+启发式一定会误报（改写本来就可能引入列举），所以文案是「确认一下」而不是断言。
+它用的是**逐项前缀匹配**而不是整组字符串比对：原文写「批处理、快捷键和离线模式」、
+改写换成「批处理、快捷键、离线模式」，连接词一变整组就不相等了，那样会大面积误报。
 
 错误码：`TEXT_EMPTY`、`TEXT_TOO_LONG`、`QUOTA_EXCEEDED`、`UNAUTHORIZED`、`SKILL_NOT_FOUND`、
 `LLM_NOT_CONFIGURED`、`TASK_NOT_FOUND`、`FORBIDDEN`、`METHOD_NOT_ALLOWED`、`INTERNAL`。

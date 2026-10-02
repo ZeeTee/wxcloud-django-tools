@@ -147,6 +147,8 @@ def _task_payload(task: RewriteTask) -> dict:
         payload["llmReport"] = task.llm_report
         # 模型是否守住了 <REPORT>/<REWRITTEN> 协议（容错解析成功时为 False）
         payload["protocolOk"] = task.protocol_ok
+        # 模型自报「补充了哪些原文没有的内容」，前端应显著提示用户核对
+        payload["addedFacts"] = task.llm_added_facts
         payload["usage"] = {
             "promptTokens": task.prompt_tokens,
             "completionTokens": task.completion_tokens,

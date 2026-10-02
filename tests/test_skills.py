@@ -141,6 +141,33 @@ class TestOutputParser(unittest.TestCase):
         self.assertEqual(parsed.text, "")
         self.assertFalse(parsed.parsed)
 
+    def test_extracts_added_facts_when_present(self):
+        raw = (
+            "<REPORT>\nAI味等级：中度\n总修改数：5 处\n"
+            "新增事实：- 补了「填表、整理数据」这类举例\n</REPORT>\n"
+            "<REWRITTEN>\n正文。\n</REWRITTEN>"
+        )
+        parsed = parse(raw)
+        self.assertIn("填表", parsed.added_facts)
+        self.assertFalse(parsed.claims_no_added_facts)
+
+    def test_claims_no_added_facts(self):
+        for claim in ("无", "无。", "没有", "-"):
+            raw = f"<REPORT>\n新增事实：{claim}\n</REPORT>\n<REWRITTEN>\n正文。\n</REWRITTEN>"
+            parsed = parse(raw)
+            self.assertTrue(parsed.claims_no_added_facts, f"claim={claim!r}")
+
+    def test_missing_added_facts_line(self):
+        raw = "<REPORT>\nAI味等级：轻度\n</REPORT>\n<REWRITTEN>\n正文。\n</REWRITTEN>"
+        parsed = parse(raw)
+        self.assertEqual(parsed.added_facts, "")
+        self.assertFalse(parsed.claims_no_added_facts)
+
+    def test_protocol_asks_for_added_facts_line(self):
+        """协议里必须要求模型自报新增内容，否则解析器永远拿不到。"""
+        prompt = get_registry().compile("humanizer", "general").system_prompt
+        self.assertIn("新增事实", prompt)
+
 
 class TestResolveSystemPrompt(unittest.TestCase):
     """skill 编译失败要回退，而不是让请求 500。"""
