@@ -237,30 +237,201 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 
 ## 六、接口
 
-### 去 AI 味（统一信封）
+### 统一信封
 
-成功 `{"ok":true,"data":{...}}`，失败 `{"ok":false,"error":{"code":"XXX","message":"人话"}}`。
+```
+成功  {"ok": true,  "data": { ... }}
+失败  {"ok": false, "error": { "code": "XXX", "message": "人话" }}
+```
 
-| 方法 | 路径 | 说明 |
+前端按 `error.code` 分支处理，`message` 可直接展示给用户。
+
+### 接口一览
+
+| # | 方法 | 路径 | 作用 | 上送参数 | 消耗额度 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | GET | `/api/health` | 部署自检：密钥是否配好、当前 provider、已加载 skill、prompt 指纹 | 无 | 否 |
+| 2 | GET | `/api/skills` | 列出可用 skill 与场景/强度选项（前端据此动态渲染，别写死） | 无 | 否 |
+| 3 | GET | `/api/quota` | 查今日剩余改写次数 | 无 | 否 |
+| 4 | GET | `/api/usage` | 账户余额 + 今日用量汇总（任务数、token、费用） | 无 | 否 |
+| 5 | POST | `/api/analyze` | AI 味体检 + 规则层改写，毫秒级同步返回 | body `text` | **否** |
+| 6 | POST | `/api/rewrite` | AI 深度改写（混合模式：优先同步，超时转轮询） | body `text` `mode` `skill` `intensity` | **是** |
+| 7 | GET | `/api/task/<taskId>` | 取改写结果（轮询或补查） | 路径 `taskId` | 否 |
+| 8 | POST | `/api/feedback` | 对某次改写结果评价 | body `taskId` `rating` `reason` `comment` | 否 |
+| 9 | GET | `/api/feedback/summary` | 当前用户的评价统计 | 无 | 否 |
+| 10 | GET/POST | `/api/count` | 模板原有的计数器示例（保持原格式，未改动） | POST body `action` | 否 |
+| 11 | GET | `/` | 模板原有的欢迎页 | 无 | 否 |
+
+路径**不带尾斜杠**（`APPEND_SLASH=False`，避免 callContainer 遇到 301 重定向）。
+
+---
+
+### 接口详解
+
+#### POST /api/analyze —— 体检 + 秒改（免费）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `text` | string | ✅ | 待处理文本，1 ~ `DEAI_MAX_INPUT_CHARS`（默认 5000）字 |
+
+**返回 `data`**：
+
+| 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| GET | `/api/health` | 探活，附带 `llmConfigured` 与已加载的 skill |
-| GET | `/api/skills` | 列出可用 skill（前端应据此动态渲染，不要写死选项） |
-| POST | `/api/analyze` | `{text}` → 体检报告 + 规则改写，同步毫秒级，不消耗额度 |
-| POST | `/api/rewrite` | `{text, mode, skill}` → **混合模式**：优先同步返回结果，超时才给 `taskId` 轮询 |
-| GET | `/api/task/<id>` | 轮询：`status` ∈ `pending/running/done/failed` |
-| GET | `/api/quota` | `{used, limit, remaining}` |
-| GET | `/api/usage` | 账户余额 + 今日用量汇总（任务数、token、费用） |
-| POST | `/api/feedback` | `{taskId, rating, reason?, comment?}` → 提交对改写结果的评价 |
-| GET | `/api/feedback/summary` | 当前用户的评价统计（好评率、差评原因分布） |
+| `report` | object | 体检报告，结构见下方「公共结构 · report」 |
+| `rulesText` | string | 规则层改写结果（安全替换/删除后的文本） |
+| `rulesChanges` | int | 实际改动的处数 |
 
-* `mode` 取 `general`（通用）、`xhs`（小红书）、`academic`（学术/研究报告）、
-  `official`（公文/职场汇报），决定 skill 的场景覆盖。
-* `intensity` 取 `light` / `medium`（默认）/ `heavy`，是用户侧的改写力度旋钮。
-* `skill` 默认 `humanizer`；传 `legacy` 可回退到旧的硬编码提示词。传不存在的 skill 会返回
-  `SKILL_NOT_FOUND`——**刻意不静默兜底**，否则用户以为在用新 skill、实际跑的是别的，极难排查。
-* 任务完成时额外返回：`skill`、`skillVersion`、`llmReport`（模型产出的检测报告）、
-  `protocolOk`、`addedFacts`、`usage`。`protocolOk: false` 表示模型没遵守输出协议、
-  走了容错解析——不影响使用，但值得监控：它变多说明 prompt 需要调整。
+不调大模型、不消耗额度，**可以随便调**——前端每次输入都能实时预览。
+
+---
+
+#### POST /api/rewrite —— AI 深度改写（消耗额度）
+
+| 字段 | 类型 | 必填 | 取值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `text` | string | ✅ | 1 ~ 5000 字 | 待改写文本 |
+| `mode` | string | | `general`（默认）/ `xhs` / `academic` / `official` | 场景，决定 skill 的场景覆盖 |
+| `skill` | string | | `humanizer`（默认）/ `legacy` | 用哪个 skill；`legacy` 是旧硬编码提示词 |
+| `intensity` | string | | `light` / `medium`（默认）/ `heavy` | 改写力度 |
+
+非法值**一律回落默认**（不报错），只有 `skill` 传了不存在的值才返回 `SKILL_NOT_FOUND`——
+这个刻意不兜底，否则用户以为在用新 skill、实际跑的是别的，极难排查。
+
+**返回 `data`**（混合模式，两种形态）：
+
+| 字段 | 出现时机 | 说明 |
+| --- | --- | --- |
+| `taskId` | 总是 | 任务 ID，用于 `/api/task/<id>` |
+| `rulesText` | 总是 | 规则层结果（**模型失败时这是兜底内容**） |
+| `report` | 总是 | 体检报告 |
+| `quota` | 总是 | `{used, limit, remaining}` |
+| `status` | 总是 | `done`=已同步拿到结果 / `pending`=请轮询 / `failed`=快速失败 |
+| `llmText` 等 | `status=done` | 与 `/api/task/<id>` 完成态返回的字段完全一致 |
+
+**前端只需判断 `status`**：`done` 直接用，其它值去轮询。响应里始终带 `rulesText`，
+所以模型失败或超时也有一份可用结果。
+
+---
+
+#### GET /api/task/&lt;taskId&gt; —— 取结果
+
+无上送参数（`taskId` 在路径里）。响应 `data`：
+
+| 字段 | 出现时机 | 说明 |
+| --- | --- | --- |
+| `status` | 总是 | `pending` / `running` / `done` / `failed` |
+| `rulesText` | 总是 | 规则层兜底文本 |
+| `elapsedMs` | 总是 | 已耗时（毫秒） |
+| `feedback` | 已评价时 | `{rating, reason}`，用于回填「你已评价」 |
+| `llmText` | `done` | 改写后的正文 |
+| `model` / `provider` | `done` | 实际用的模型与供应商 |
+| `skill` / `skillVersion` / `intensity` | `done` | 实际生效的 skill 与强度 |
+| `promptFingerprint` | `done` | 编译后 prompt 的指纹，用于定位版本 |
+| `llmReport` | `done` | 模型自评的检测报告（legacy 模式为空） |
+| `addedFacts` | `done` | 模型自报「补充了哪些原文没有的内容」 |
+| `protocolOk` | `done` | 模型是否守住了输出协议；`false` 表示走了容错解析 |
+| `usage` | `done` | token 用量与费用，结构见下方 |
+| `warnings` | `done` | 保真校验提示数组（可能为空） |
+| `error` | `failed` | 人话错误信息 |
+
+---
+
+#### POST /api/feedback —— 提交评价
+
+| 字段 | 类型 | 必填 | 取值 | 说明 |
+| --- | --- | --- | --- | --- |
+| `taskId` | string | ✅ | | 要评价的任务 ID，**必须属于当前用户**（否则 403） |
+| `rating` | string | ✅ | `good` / `bad` | 满意 / 不满意 |
+| `reason` | string | | 见下方枚举 | 仅 `bad` 时有意义；`good` 时会被清空 |
+| `comment` | string | | ≤1000 字 | 自由补充 |
+
+`reason` 枚举（前端应从 `/api/feedback/summary` 的 `availableReasons` 读，别写死）：
+
+```
+added_facts   加了原文没有的内容      lost_info       丢了原文的信息
+not_natural   还是很像 AI             changed_meaning 意思被改了
+too_casual    改得太随意/口语         too_formal      改得太正式
+too_long      变啰嗦了                too_short       变短了
+other         其他
+```
+
+返回 `{accepted: true, created: bool, rating}`。`created=false` 表示覆盖了上次的评价
+（同一任务同一用户只保留一条，重复提交视为「改主意」）。
+
+---
+
+### 公共结构
+
+**`report`（体检报告）**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `score` | int | AI 味分数 **0-100，越高越像 AI** |
+| `level` | string | `low` / `medium` / `high` |
+| `verdict` | string | 一句话结论，如「AI 味偏重（89 分）：主要是序数词分点骨架 3 处」 |
+| `totalHits` | int | 命中总数 |
+| `charCount` | int | 字符数 |
+| `categories` | array | 按类聚合：`{key, name, count, severity, samples[]}` |
+| `advice` | array | 可执行的改写建议（字符串数组） |
+| `stats` | object | 节奏统计：`sentenceCount` `paragraphCount` `avgSentenceLen` `sentenceLenStd` `longSentenceRatio` `rhythmVariance` |
+| `hits` | array | 逐条命中，结构见下 |
+
+**`report.hits[]`**
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `start` / `end` | int | 在**原文**中的字符下标（前端用来高亮） |
+| `text` | string | 命中的原文片段 |
+| `kind` | string | `replace`（已自动改写）/ `flag`（仅标记） |
+| `severity` | string | `high` / `medium` / `low` |
+| `reason` | string | 为什么它是 AI 味 |
+| `suggestion` | string \| null | 建议替换成什么（可为 null） |
+| `category` / `categoryName` | string | 类别 key 与中文名 |
+| `ruleId` | string | 规则 ID，便于定位词库条目 |
+
+**`usage`（任务完成时）**
+
+```json
+{
+  "promptTokens": 15233, "completionTokens": 77, "totalTokens": 15310,
+  "cacheHitTokens": 14592, "cacheHitRate": 0.9579, "costCNY": 0.002482
+}
+```
+
+| 字段 | 说明 |
+| --- | --- |
+| `promptTokens` / `completionTokens` / `totalTokens` | 输入、输出、合计 token |
+| `cacheHitTokens` / `cacheHitRate` | 命中 prompt 缓存的量——**这是成本的关键**，命中价与未命中价差 50 倍 |
+| `costCNY` | 本次费用（元）。由供应商上报的美元成本折算，或按本地价格表估算 |
+
+### 错误码
+
+| code | HTTP | 含义 |
+| --- | --- | --- |
+| `TEXT_EMPTY` | 400 | 文本为空 |
+| `TEXT_TOO_LONG` | 400 | 超过 `DEAI_MAX_INPUT_CHARS` |
+| `BAD_JSON` / `BAD_ENCODING` | 400 | 请求体不是合法 JSON / UTF-8 |
+| `METHOD_NOT_ALLOWED` | 405 | 请求方法不对（返回的仍是 JSON 信封） |
+| `SKILL_NOT_FOUND` | 400 | 传了不存在的 skill（刻意不兜底） |
+| `BAD_RATING` | 400 | `rating` 不是 `good`/`bad` |
+| `UNAUTHORIZED` | 401 | 拿不到调用方身份 |
+| `FORBIDDEN` | 403 | 访问他人的任务 |
+| `TASK_NOT_FOUND` | 404 | 任务不存在或已过期 |
+| `QUOTA_EXCEEDED` | 429 | 今日额度用完 |
+| `LLM_NOT_CONFIGURED` | 503 | 服务端没配模型密钥 |
+| `INTERNAL` | 500 | 服务端异常 |
+
+### 模板原有：计数器示例（保持原格式）
+
+```bash
+curl https://<域名>/api/count
+curl -X POST -H 'content-type: application/json' \
+  -d '{"action": "inc"}' https://<域名>/api/count
+```
+
+响应是模板自己的 `{"code": 0, "data": 42}` 格式（**没有**改写成 deai 的信封，
+以免破坏已有调用方）。`action` 取 `inc` 或 `clear`。
 
 ### 场景覆盖层：为什么它必须放在 prompt 最前面
 
@@ -404,17 +575,6 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 空闲时段是高峰的一半，要更准就按当前时段改。
 
 余额接口仍然保留（`/api/usage`），但只用于「够不够用」的粗粒度监控。
-
-### 模板原有：计数器示例（保持原格式）
-
-```bash
-curl https://<域名>/api/count
-curl -X POST -H 'content-type: application/json' \
-  -d '{"action": "inc"}' https://<域名>/api/count
-```
-
-响应是模板自己的 `{"code": 0, "data": 42}` 格式（**没有**改写成 deai 的信封，
-以免破坏已有调用方）。`action` 取 `inc` 或 `clear`。
 
 ---
 
