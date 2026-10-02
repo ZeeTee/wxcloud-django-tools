@@ -23,6 +23,7 @@ Skill 目录是随镜像发布的只读内容，所以编译结果可以安全�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -137,6 +138,18 @@ class CompiledSkill:
     @property
     def prompt_chars(self) -> int:
         return len(self.system_prompt)
+
+    @property
+    def fingerprint(self) -> str:
+        """编译后 prompt 的短哈希。
+
+        ``skill.json`` 里的 ``version`` 是**手写的**，改了内容忘记 bump 是常事，
+        版本号会说谎。指纹是自动算的，能精确回答「这次任务用的到底是哪份 prompt」。
+
+        它的实际用途：配合用户反馈，可以看出「改了 prompt 之后好评率有没有变化」。
+        skill 随镜像发布，回滚靠切镜像版本，指纹则告诉你该回滚到哪一版。
+        """
+        return hashlib.sha256(self.system_prompt.encode("utf-8")).hexdigest()[:12]
 
 
 @dataclass

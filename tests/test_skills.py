@@ -228,28 +228,58 @@ class TestResolveSystemPrompt(unittest.TestCase):
     def test_legacy_returns_hardcoded_prompt(self):
         from deai.engine.rewriter import LEGACY_SKILL, resolve_system_prompt
 
-        prompt, used, version, degraded = resolve_system_prompt(LEGACY_SKILL, "general")
+        prompt, used, version, degraded, fingerprint = resolve_system_prompt(
+            LEGACY_SKILL, "general"
+        )
         self.assertEqual(used, LEGACY_SKILL)
         self.assertFalse(degraded)
         self.assertIn("你是中文母语写作者", prompt)
         self.assertEqual(version, "")
+        self.assertEqual(fingerprint, "", "legacy 模式没有编译产物，不该有指纹")
 
     def test_humanizer_returns_compiled_prompt(self):
         from deai.engine.rewriter import resolve_system_prompt
 
-        prompt, used, version, degraded = resolve_system_prompt("humanizer", "xhs")
+        prompt, used, version, degraded, fingerprint = resolve_system_prompt("humanizer", "xhs")
         self.assertEqual(used, "humanizer")
         self.assertEqual(version, "4.1.0")
         self.assertFalse(degraded)
         self.assertIn("【附录 A】", prompt)
+        self.assertTrue(fingerprint, "skill 模式应该有 prompt 指纹")
 
     def test_unknown_skill_degrades_to_legacy(self):
         from deai.engine.rewriter import LEGACY_SKILL, resolve_system_prompt
 
-        prompt, used, _version, degraded = resolve_system_prompt("does-not-exist", "general")
+        prompt, used, _version, degraded, fingerprint = resolve_system_prompt(
+            "does-not-exist", "general"
+        )
         self.assertEqual(used, LEGACY_SKILL)
         self.assertTrue(degraded, "未知 skill 必须标记为已降级，否则问题会被掩盖")
         self.assertIn("你是中文母语写作者", prompt)
+        self.assertEqual(fingerprint, "")
+
+    # ---- prompt 指纹 ----
+
+    def test_fingerprint_is_stable_for_same_config(self):
+        reg = get_registry()
+        a = reg.compile("humanizer", "general", "medium")
+        b = reg.compile("humanizer", "general", "medium")
+        self.assertEqual(a.fingerprint, b.fingerprint)
+
+    def test_fingerprint_differs_across_configs(self):
+        """指纹要能区分不同场景/强度——否则它就无法用来定位是哪份 prompt。"""
+        reg = get_registry()
+        base = reg.compile("humanizer", "general", "medium").fingerprint
+        other_scene = reg.compile("humanizer", "academic", "medium").fingerprint
+        other_intensity = reg.compile("humanizer", "general", "heavy").fingerprint
+        self.assertNotEqual(base, other_scene)
+        self.assertNotEqual(base, other_intensity)
+        self.assertNotEqual(other_scene, other_intensity)
+
+    def test_fingerprint_shape(self):
+        fp = get_registry().compile("humanizer", "general").fingerprint
+        self.assertEqual(len(fp), 12)
+        self.assertTrue(all(c in "0123456789abcdef" for c in fp))
 
 
 if __name__ == "__main__":

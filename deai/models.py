@@ -27,6 +27,9 @@ class RewriteTask(models.Model):
     # 同一段文本换 skill 效果差多少、哪个 skill 的失败率高。
     skill = models.CharField(max_length=32, default="humanizer")
     skill_version = models.CharField(max_length=16, blank=True, default="")
+    # 编译后 prompt 的短哈希。version 是手写的、可能忘记 bump，指纹不会。
+    # 配合 Feedback 表就能回答「改了 prompt 之后好评率变了没」。
+    prompt_fingerprint = models.CharField(max_length=16, blank=True, default="")
     source_text = models.TextField()
     rules_text = models.TextField(blank=True, default="")
     llm_text = models.TextField(blank=True, default="")

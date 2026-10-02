@@ -271,6 +271,26 @@ academic 场景明明写着「不要口语化」，模型照样写成「这两�
 补上「『深度学习这几年进展很快』✗ / 『近年来深度学习领域进展迅速』✓」这样的对照，
 效果立竿见影。`overrides/academic.json` 和 `intensity=light` 的提示词都用了这个手法。
 
+### skill 的发布与版本管理
+
+**skill 随镜像发布**：`deai/skills/` 是仓库里的文件，改了就要重新构建镜像。
+没有 DB 存储、没有热更新——这是刻意的，它换来的是「skill 变更走 Git review、
+和代码同生共死」，以及零分布式一致性问题。
+
+灰度与回滚直接用云托管的能力：发布新版本时可以分批放量，出问题切回上一个镜像版本。
+
+**但 `version` 会说谎**——它是 `skill.json` 里手写的，改了内容忘记 bump 是常事。
+所以每次编译都会自动算一个 **prompt 指纹**（编译产物的 sha256 前 12 位）：
+
+| 位置 | 用途 |
+| --- | --- |
+| `GET /api/health` → `promptFingerprints` | 部署后一眼确认线上跑的是哪份 prompt |
+| `GET /api/task/<id>` → `promptFingerprint` | 定位某次改写用的是哪份 prompt |
+| `RewriteTask.prompt_fingerprint` | 配合 `Feedback` 表回答「改了 prompt 后好评率变了没」 |
+
+实测各配置的指纹互不相同（general/xhs/academic/official × light/medium/heavy），
+所以它足以定位到具体哪一份编译产物，也能告诉你该回滚到哪一版。
+
 ### 用户反馈：没有自动评测时的唯一信号
 
 当前**没有**自动评测，所以「改得好不好」只能靠用户说。这也是唯一能发现

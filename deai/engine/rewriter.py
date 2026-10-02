@@ -149,20 +149,29 @@ def check_added_content(original: str, rewritten: str, added_facts: str = "") ->
 
 def resolve_system_prompt(
     skill: str, mode: str, intensity: str = "medium"
-) -> tuple[str, str, str, bool]:
-    """返回 ``(system_prompt, 实际使用的 skill, skill 版本, 是否发生回退)``。
+) -> tuple[str, str, str, bool, str]:
+    """返回 ``(system_prompt, skill, 版本, 是否回退, prompt 指纹)``。
 
     skill 编译失败时回退到 legacy prompt，而不是让整个请求 500 ——
     用户拿到一份稍弱的结果，也好过拿到一个错误。
+
+    指纹是编译后 prompt 的哈希：``version`` 是手写的、可能忘记 bump，
+    指纹则能精确追踪「这次任务用的是哪份 prompt」。
     """
     if skill == LEGACY_SKILL:
-        return get_system_prompt(mode), LEGACY_SKILL, "", False
+        return get_system_prompt(mode), LEGACY_SKILL, "", False, ""
     try:
         compiled = get_registry().compile(skill, scene=mode, intensity=intensity)
     except SkillError as exc:
         logger.warning("skill %s 不可用（%s），回退到 legacy prompt", skill, exc)
-        return get_system_prompt(mode), LEGACY_SKILL, "", True
-    return compiled.system_prompt, compiled.slug, compiled.version, False
+        return get_system_prompt(mode), LEGACY_SKILL, "", True, ""
+    return (
+        compiled.system_prompt,
+        compiled.slug,
+        compiled.version,
+        False,
+        compiled.fingerprint,
+    )
 
 
 def rewrite(
@@ -181,7 +190,7 @@ def rewrite(
     """
     cfg = llm.load_config()
     scene = mode if mode in MODE_LABELS or mode in ("academic", "official") else "general"
-    system_prompt, used_skill, skill_version, degraded = resolve_system_prompt(
+    system_prompt, used_skill, skill_version, degraded, fingerprint = resolve_system_prompt(
         skill, scene, intensity
     )
     use_protocol = used_skill != LEGACY_SKILL
@@ -231,6 +240,8 @@ def rewrite(
         "mode": scene,
         "skill": used_skill,
         "skillVersion": skill_version,
+        # 编译后 prompt 的指纹：version 手写可能忘记 bump，指纹不会说谎
+        "promptFingerprint": fingerprint,
         "intensity": intensity,
         "protocolOk": protocol_ok,
         "degraded": degraded,

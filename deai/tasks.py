@@ -91,6 +91,7 @@ def _run(task_id: str) -> None:
             # 正好是排查「为什么这次效果不一样」的线索
             skill=result.get("skill") or task.skill,
             skill_version=result.get("skillVersion") or "",
+            prompt_fingerprint=result.get("promptFingerprint") or "",
             protocol_ok=bool(result.get("protocolOk", True)),
             llm_added_facts=result.get("addedFacts") or "",
             prompt_tokens=getattr(usage, "prompt_tokens", 0) or 0,

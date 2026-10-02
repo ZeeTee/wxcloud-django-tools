@@ -150,6 +150,8 @@ def _task_payload(task: RewriteTask) -> dict:
         payload["skill"] = task.skill
         payload["skillVersion"] = task.skill_version
         payload["intensity"] = task.intensity
+        # prompt 指纹：用来定位「这次任务用的是哪一份 prompt」
+        payload["promptFingerprint"] = task.prompt_fingerprint
         # skill 模式会额外产出检测报告；legacy 模式下是空字符串
         payload["llmReport"] = task.llm_report
         # 模型是否守住了 <REPORT>/<REWRITTEN> 协议（容错解析成功时为 False）
@@ -183,12 +185,18 @@ def _task_payload(task: RewriteTask) -> dict:
 def health(request):
     """探活。顺带暴露「模型密钥是否配好」与已加载的 skill，方便部署后自查。"""
     registry = get_registry()
+    # 带上 prompt 指纹：部署后一眼就能确认线上跑的是哪一份 prompt，
+    # skill 随镜像发布时这是最直接的核对手段。
+    fingerprints = {
+        s.slug: registry.compile(s.slug).fingerprint for s in registry.list() if registry.has(s.slug)
+    }
     return ok(
         {
             "status": "up",
             "llmConfigured": is_configured(),
             "defaultSkill": DEFAULT_SKILL,
             "skills": [s.slug for s in registry.list()] + list(EXTRA_SKILLS),
+            "promptFingerprints": fingerprints,
         }
     )
 
