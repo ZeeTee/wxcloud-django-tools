@@ -247,12 +247,27 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 | GET | `/api/quota` | `{used, limit, remaining}` |
 | GET | `/api/usage` | 账户余额 + 今日用量汇总（任务数、token、费用） |
 
-* `mode` 取 `general`（通用）或 `xhs`（小红书），决定 skill 的场景覆盖。
+* `mode` 取 `general`（通用）、`xhs`（小红书）、`academic`（学术/研究报告）、
+  `official`（公文/职场汇报），决定 skill 的场景覆盖。
+* `intensity` 取 `light` / `medium`（默认）/ `heavy`，是用户侧的改写力度旋钮。
 * `skill` 默认 `humanizer`；传 `legacy` 可回退到旧的硬编码提示词。传不存在的 skill 会返回
   `SKILL_NOT_FOUND`——**刻意不静默兜底**，否则用户以为在用新 skill、实际跑的是别的，极难排查。
 * 任务完成时额外返回：`skill`、`skillVersion`、`llmReport`（模型产出的检测报告）、
   `protocolOk`、`addedFacts`、`usage`。`protocolOk: false` 表示模型没遵守输出协议、
   走了容错解析——不影响使用，但值得监控：它变多说明 prompt 需要调整。
+
+### 场景覆盖层：为什么它必须放在 prompt 最前面
+
+原 skill 是**自媒体调性**：要求口语化、禁冒号、禁引号、鼓励「注入灵魂」。
+直接用在学术论文或公文上会毁掉文本。所以 `overrides/<scene>.json` 提供了覆盖层。
+
+**踩过的坑**：覆盖层最初放在 prompt 末尾，结果被前面一万多字的通用方法论淹没——
+academic 场景明明写着「不要口语化」，模型照样写成「这两年」「越堆越多」。
+把覆盖层**提到最前面**并声明「冲突时以场景补充为准」之后才生效。
+
+**另一条经验：给正反例比给规则有效得多。** 光写「不要口语化」几乎没用；
+补上「『深度学习这几年进展很快』✗ / 『近年来深度学习领域进展迅速』✓」这样的对照，
+效果立竿见影。`overrides/academic.json` 和 `intensity=light` 的提示词都用了这个手法。
 
 ### 保真校验（这个功能最大的信任风险）
 

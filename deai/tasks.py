@@ -62,7 +62,7 @@ def _run(task_id: str) -> None:
     started = time.monotonic()
     task = (
         RewriteTask.objects.filter(pk=task_id)
-        .only("id", "source_text", "mode", "skill")
+        .only("id", "source_text", "mode", "skill", "intensity")
         .first()
     )
     if task is None:  # 任务被清理掉了
@@ -71,7 +71,7 @@ def _run(task_id: str) -> None:
     RewriteTask.objects.filter(pk=task_id).update(status=RewriteTask.STATUS_RUNNING)
 
     try:
-        result = llm_rewrite(task.source_text, task.mode, skill=task.skill)
+        result = llm_rewrite(task.source_text, task.mode, skill=task.skill, intensity=task.intensity)
     except LLMError as exc:
         _fail(task_id, str(exc), started)
         logger.warning("任务 %s 模型调用失败: %s", task_id, exc)

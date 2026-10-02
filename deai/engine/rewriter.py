@@ -147,7 +147,9 @@ def check_added_content(original: str, rewritten: str, added_facts: str = "") ->
     return warnings
 
 
-def resolve_system_prompt(skill: str, mode: str) -> tuple[str, str, str, bool]:
+def resolve_system_prompt(
+    skill: str, mode: str, intensity: str = "medium"
+) -> tuple[str, str, str, bool]:
     """返回 ``(system_prompt, 实际使用的 skill, skill 版本, 是否发生回退)``。
 
     skill 编译失败时回退到 legacy prompt，而不是让整个请求 500 ——
@@ -156,24 +158,32 @@ def resolve_system_prompt(skill: str, mode: str) -> tuple[str, str, str, bool]:
     if skill == LEGACY_SKILL:
         return get_system_prompt(mode), LEGACY_SKILL, "", False
     try:
-        compiled = get_registry().compile(skill, scene=mode)
+        compiled = get_registry().compile(skill, scene=mode, intensity=intensity)
     except SkillError as exc:
         logger.warning("skill %s 不可用（%s），回退到 legacy prompt", skill, exc)
         return get_system_prompt(mode), LEGACY_SKILL, "", True
     return compiled.system_prompt, compiled.slug, compiled.version, False
 
 
-def rewrite(text: str, mode: str = "general", skill: str = DEFAULT_SKILL) -> dict:
+def rewrite(
+    text: str,
+    mode: str = "general",
+    skill: str = DEFAULT_SKILL,
+    intensity: str = "medium",
+) -> dict:
     """调用模型做深度改写。
 
-    :param mode: 场景（``general`` / ``xhs``），决定 skill 的场景覆盖
+    :param mode: 场景（``general`` / ``xhs`` / ``academic`` / ``official``）
     :param skill: 用哪个 skill；``legacy`` 回退到硬编码 prompt
+    :param intensity: 改写强度（``light`` / ``medium`` / ``heavy``）
     :returns: 含 ``text`` / ``report`` / ``warnings`` / skill 元信息的字典
     :raises llm.LLMError: 模型不可用或返回异常
     """
     cfg = llm.load_config()
-    scene = mode if mode in MODE_LABELS else "general"
-    system_prompt, used_skill, skill_version, degraded = resolve_system_prompt(skill, scene)
+    scene = mode if mode in MODE_LABELS or mode in ("academic", "official") else "general"
+    system_prompt, used_skill, skill_version, degraded = resolve_system_prompt(
+        skill, scene, intensity
+    )
     use_protocol = used_skill != LEGACY_SKILL
 
     # 中文 1 字约 1-1.5 token；skill 模式还要额外输出报告，所以留更足余量
@@ -221,6 +231,7 @@ def rewrite(text: str, mode: str = "general", skill: str = DEFAULT_SKILL) -> dic
         "mode": scene,
         "skill": used_skill,
         "skillVersion": skill_version,
+        "intensity": intensity,
         "protocolOk": protocol_ok,
         "degraded": degraded,
         # 用量与费用取自响应里的 usage，不用「余额两次查询算差值」——

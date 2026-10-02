@@ -81,7 +81,16 @@ slugs = [s.get("slug") for s in d.get("skills", [])]
 check("含 humanizer", "humanizer" in slugs, slugs)
 check("含 legacy 回退项", "legacy" in slugs, slugs)
 check("默认 skill 是 humanizer", d.get("default") == "humanizer", d.get("default"))
-check("场景列表含 general/xhs", set(d.get("scenes", [])) == {"general", "xhs"}, d.get("scenes"))
+check(
+    "场景列表含全部四个场景",
+    set(d.get("scenes", [])) == {"general", "xhs", "academic", "official"},
+    d.get("scenes"),
+)
+check(
+    "强度档位齐全",
+    set(d.get("intensities", [])) == {"light", "medium", "heavy"},
+    d.get("intensities"),
+)
 humanizer = next((s for s in d.get("skills", []) if s.get("slug") == "humanizer"), {})
 check("humanizer 带版本号", bool(humanizer.get("version")), humanizer)
 

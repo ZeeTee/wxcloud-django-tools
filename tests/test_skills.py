@@ -41,11 +41,16 @@ class TestSkillCompile(unittest.TestCase):
         self.assertIn("【附录 A】", compiled.system_prompt)
         self.assertIn("【附录 B】", compiled.system_prompt)
 
-    def test_fewshot_reference_not_injected_by_default(self):
-        """examples 标了 fewshot，P0 不注入（省 token），但不应出现死引用。"""
+    def test_examples_injected_by_default(self):
+        """示例库默认注入。
+
+        实测依据：稳态成本几乎不变（缓存命中 98.5%，只贵约 25%），
+        但**每次改动 prompt 后的第一次调用会贵约 7 倍**（缓存前缀变了要重建）。
+        如果哪天要省这笔冷启动成本，把 skill.json 里 examples 的 when 改回 fewshot。
+        """
         compiled = self.reg.compile("humanizer", "general")
-        self.assertNotIn("examples", compiled.injected)
-        self.assertNotIn("【附录 C】", compiled.system_prompt)
+        self.assertIn("examples", compiled.injected)
+        self.assertIn("【附录 C】", compiled.system_prompt)
 
     def test_output_protocol_appended(self):
         prompt = self.reg.compile("humanizer", "xhs").system_prompt
@@ -75,15 +80,60 @@ class TestSkillCompile(unittest.TestCase):
         with self.assertRaises(SkillError):
             self.reg.compile("no-such-skill")
 
+    # ---- 场景覆盖层 ----
+
+    def test_all_scenes_available(self):
+        info = next(s for s in self.reg.list() if s.slug == "humanizer")
+        for scene in ("general", "xhs", "academic", "official"):
+            self.assertIn(scene, info.scenes, f"缺少场景 {scene}")
+
+    def test_academic_scene_overrides_selfmedia_rules(self):
+        """学术场景必须覆盖原 skill 的自媒体调性：禁冒号、要求口语化。
+
+        这条很重要——原 skill 的字面要求直接用在中文学术写作上会毁掉文本。
+        """
+        prompt = self.reg.compile("humanizer", "academic").system_prompt
+        self.assertIn("学术", prompt)
+        self.assertIn("标点放宽", prompt)
+        self.assertIn("不要口语化", prompt)
+
+    def test_official_scene_keeps_formality(self):
+        prompt = self.reg.compile("humanizer", "official").system_prompt
+        self.assertIn("公文", prompt)
+        self.assertIn("保留正式语体", prompt)
+
+    # ---- 强度档位 ----
+
+    def test_intensity_changes_prompt(self):
+        light = self.reg.compile("humanizer", "general", "light").system_prompt
+        heavy = self.reg.compile("humanizer", "general", "heavy").system_prompt
+        medium = self.reg.compile("humanizer", "general", "medium").system_prompt
+        self.assertIn("轻度", light)
+        self.assertIn("重度", heavy)
+        # medium 就是 skill 的默认行为，不需要再追加一段提示
+        self.assertNotIn("本次强度", medium)
+        self.assertNotEqual(light, heavy)
+
+    def test_unknown_intensity_falls_back_to_medium(self):
+        compiled = self.reg.compile("humanizer", "general", "并不存在的强度")
+        self.assertEqual(compiled.intensity, "medium")
+
+    def test_intensity_is_part_of_cache_key(self):
+        a = self.reg.compile("humanizer", "general", "light")
+        b = self.reg.compile("humanizer", "general", "heavy")
+        again = self.reg.compile("humanizer", "general", "light")
+        self.assertIsNot(a, b, "不同强度不该共用同一份编译结果")
+        self.assertIs(a, again, "同参数应命中缓存")
+
     def test_compile_is_cached(self):
         first = self.reg.compile("humanizer", "general")
         second = self.reg.compile("humanizer", "general")
         self.assertIs(first, second)
 
     def test_prompt_size_is_reasonable(self):
-        """把大小钉住：意外注入整份 examples 会让 prompt 翻倍、成本失控。"""
+        """把大小钉住：意外重复注入会让 prompt 翻倍、成本和延迟都失控。"""
         compiled = self.reg.compile("humanizer", "general")
-        self.assertLess(compiled.prompt_chars, 30000, "system prompt 过大，检查 inject 规则")
+        self.assertLess(compiled.prompt_chars, 32000, "system prompt 过大，检查 inject 规则")
         self.assertGreater(compiled.prompt_chars, 5000, "system prompt 过小，可能没注入成功")
 
 

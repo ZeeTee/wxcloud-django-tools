@@ -21,6 +21,8 @@ class RewriteTask(models.Model):
     openid = models.CharField(max_length=64, db_index=True)
     status = models.CharField(max_length=16, default=STATUS_PENDING, db_index=True)
     mode = models.CharField(max_length=16, default="general")
+    # 改写强度：light（保守）/ medium（默认）/ heavy（彻底）
+    intensity = models.CharField(max_length=16, default="medium")
     # 用哪个 skill 跑的（humanizer / legacy …）。记下来才能做事后归因：
     # 同一段文本换 skill 效果差多少、哪个 skill 的失败率高。
     skill = models.CharField(max_length=32, default="humanizer")

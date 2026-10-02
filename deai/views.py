@@ -33,7 +33,8 @@ from .skills import get_registry
 logger = logging.getLogger(__name__)
 
 MAX_BODY_BYTES = 256 * 1024
-VALID_MODES = ("general", "xhs")
+VALID_MODES = ("general", "xhs", "academic", "official")
+VALID_INTENSITIES = ("light", "medium", "heavy")
 # 除了 registry 里扫描到的 skill，额外允许 legacy（显式回退到旧硬编码提示词）
 EXTRA_SKILLS = ("legacy",)
 DEFAULT_SKILL = "humanizer"
@@ -143,6 +144,7 @@ def _task_payload(task: RewriteTask) -> dict:
         payload["model"] = task.model_name
         payload["skill"] = task.skill
         payload["skillVersion"] = task.skill_version
+        payload["intensity"] = task.intensity
         # skill 模式会额外产出检测报告；legacy 模式下是空字符串
         payload["llmReport"] = task.llm_report
         # 模型是否守住了 <REPORT>/<REWRITTEN> 协议（容错解析成功时为 False）
@@ -206,7 +208,14 @@ def skills(request):
             "defaultScene": "general",
         }
     )
-    return ok({"default": DEFAULT_SKILL, "scenes": list(VALID_MODES), "skills": items})
+    return ok(
+        {
+            "default": DEFAULT_SKILL,
+            "scenes": list(VALID_MODES),
+            "intensities": list(VALID_INTENSITIES),
+            "skills": items,
+        }
+    )
 
 
 @api("GET")
@@ -302,6 +311,11 @@ def rewrite(request):
     if skill is None:
         return fail("SKILL_NOT_FOUND", f"没有这个 skill：{data.get('skill')}", 400)
 
+    # 强度不合法就回落默认值，不报错——它影响的是措辞不是正确性
+    intensity = str(data.get("intensity") or "medium").strip()
+    if intensity not in VALID_INTENSITIES:
+        intensity = "medium"
+
     if not is_configured():
         return fail("LLM_NOT_CONFIGURED", "服务端还没配置模型密钥，暂时无法深度改写", 503)
 
@@ -319,6 +333,7 @@ def rewrite(request):
         openid=identity,
         mode=mode,
         skill=skill,
+        intensity=intensity,
         source_text=text,
         rules_text=rules_text,
         status=RewriteTask.STATUS_PENDING,

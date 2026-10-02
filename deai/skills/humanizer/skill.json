@@ -24,11 +24,13 @@
       "label": "C",
       "title": "改写示例库",
       "path": "references/examples.md",
-      "when": "fewshot"
+      "when": "always"
     }
   ],
-  "scenes": ["general", "xhs"],
+  "scenes": ["general", "xhs", "academic", "official"],
   "defaultScene": "general",
+  "intensities": ["light", "medium", "heavy"],
+  "defaultIntensity": "medium",
   "rounds": {
     "light": 1,
     "medium": 1,

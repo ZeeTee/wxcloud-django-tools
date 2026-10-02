@@ -38,7 +38,34 @@ _FRONTMATTER_RE = re.compile(r"\A---\s*\n.*?\n---\s*\n", re.S)
 # 「（加载 references/xxx.md）」/「加载 references/xxx.md 核查」
 _LOAD_HINT_RE = re.compile(r"[（(]?\s*加载\s+references/([A-Za-z0-9_\-]+)\.md\s*[）)]?")
 
-# 输出协议：用 XML 标签而不是 markdown 标题做分隔，正文里出现标题也不会解析错位
+# 用户指定的改写强度。skill 正文里本来就有一套「按文本自动分级」的流程，
+# 这里额外给用户一个显式旋钮：两者结合，用户的指定优先。
+_INTENSITY_HINTS = {
+    "light": """
+【本次强度：轻度】
+用户要求保守改写。请严格照做：
+- 只处理最明显的问题：禁用词、禁用标点、"不是A而是B"三毒句式。
+- **不要重写句子结构**，不要调整段落顺序，不要改变叙述人称。
+- 能改一个词就不改一句，能删一句就不重写一段。
+- 原文读起来正常的句子一律保留原样。
+
+正反例（务必照「轻度」一侧写）：
+  原文：首先，我们要明确目标。其次，要不断优化流程。
+  轻度（✓）：我们要明确目标。要不断优化流程。     ← 只删了连接词
+  过度（✗）：先把目标定下来，流程再一点点改。      ← 重写了句子结构
+  原文：综上所述，这件事至关重要。
+  轻度（✓）：这件事至关重要。                    ← 只删了收束词
+  过度（✗）：这事挺要紧的。                       ← 换了口语说法，超出轻度范围
+""",
+    "heavy": """
+【本次强度：重度】
+用户要求彻底改写。
+- 执行完整的 Pass 1 / Pass 2 / Pass 3，逐段处理，不留死角。
+- 长句该拆就拆，该打碎的节奏主动打碎。
+- 结尾的升华、总结、口号整段删掉。
+- 但仍然**不得新增原文没有的事实**——强度高指的是改得彻底，不是编得多。
+""",
+}
 _OUTPUT_PROTOCOL = """
 ---
 【输出协议（必须严格遵守）】
@@ -105,6 +132,7 @@ class CompiledSkill:
     system_prompt: str
     injected: tuple[str, ...] = ()
     max_rounds: int = 1
+    intensity: str = "medium"
 
     @property
     def prompt_chars(self) -> int:
@@ -187,21 +215,36 @@ class SkillRegistry:
 
     # -- 编译 ---------------------------------------------------------------
 
-    def compile(self, slug: str, scene: str | None = None) -> CompiledSkill:
+    def compile(
+        self, slug: str, scene: str | None = None, intensity: str | None = None
+    ) -> CompiledSkill:
+        """编译成可直接用的 system prompt。
+
+        ``scene``（场景）与 ``intensity``（强度）任一不合法时都回落到默认值，
+        不抛异常——这两个值直接影响的是措辞，不是正确性，没必要让请求失败。
+        """
         raw = self._skills.get(slug)
         if raw is None:
             raise SkillError(f"未知的 skill：{slug}")
-        chosen = scene or raw.info.default_scene
-        if chosen not in raw.info.scenes:
-            chosen = raw.info.default_scene
-        if chosen in raw._compiled:
-            return raw._compiled[chosen]
 
-        compiled = self._compile(raw, chosen)
-        raw._compiled[chosen] = compiled
+        chosen_scene = scene or raw.info.default_scene
+        if chosen_scene not in raw.info.scenes:
+            chosen_scene = raw.info.default_scene
+
+        intensities = tuple(raw.manifest.get("intensities") or ("medium",))
+        chosen_intensity = intensity or str(raw.manifest.get("defaultIntensity") or "medium")
+        if chosen_intensity not in intensities:
+            chosen_intensity = "medium" if "medium" in intensities else intensities[0]
+
+        key = (chosen_scene, chosen_intensity)
+        if key in raw._compiled:
+            return raw._compiled[key]
+
+        compiled = self._compile(raw, chosen_scene, chosen_intensity)
+        raw._compiled[key] = compiled
         return compiled
 
-    def _compile(self, raw: _RawSkill, scene: str) -> CompiledSkill:
+    def _compile(self, raw: _RawSkill, scene: str, intensity: str) -> CompiledSkill:
         inject_specs = list(raw.manifest.get("inject") or [])
         active = [spec for spec in inject_specs if str(spec.get("when")) == "always"]
         label_of = {str(spec.get("ref")): str(spec.get("label") or "?") for spec in active}
@@ -209,10 +252,25 @@ class SkillRegistry:
         # 1) 把正文里的「加载 references/xxx.md」改写成附录引用
         body = _LOAD_HINT_RE.sub(lambda m: self._hint_replacement(m, label_of), raw.body)
 
-        parts = [body]
+        parts: list[str] = []
         injected: list[str] = []
 
-        # 2) 拼接附录
+        # 2) 场景覆盖**放在最前面**，并明确声明它优先。
+        #    实测教训：放在末尾时会被上面一万多字的通用方法论淹没——academic 场景
+        #    要求「不要口语化」，模型照样写成「这两年」「越堆越多」。
+        override = self._load_override(raw, scene)
+        if override:
+            parts.append(override)
+            parts.append(
+                "\n---\n"
+                "【重要】以上是本次请求的场景补充。下面的通用方法论中，"
+                "任何与场景补充冲突的要求（尤其是标点禁令、口语化程度、语体风格）"
+                "**一律以场景补充为准**。\n"
+            )
+
+        parts.append(body)
+
+        # 3) 拼接附录
         for spec in active:
             ref = str(spec.get("ref"))
             rel = str(spec.get("path") or "")
@@ -225,12 +283,12 @@ class SkillRegistry:
             parts.append(f"\n---\n【附录 {spec.get('label')}】{title}\n\n{content}")
             injected.append(ref)
 
-        # 3) 场景覆盖
-        override = self._load_override(raw, scene)
-        if override:
-            parts.append("\n---\n" + override)
+        # 4) 强度提示（medium 是 skill 的默认行为，不需要额外说明）
+        hint = _INTENSITY_HINTS.get(intensity)
+        if hint:
+            parts.append("\n---\n" + hint.strip())
 
-        # 4) 输出协议
+        # 5) 输出协议
         parts.append(_OUTPUT_PROTOCOL)
 
         rounds = raw.manifest.get("rounds") or {}
@@ -240,7 +298,8 @@ class SkillRegistry:
             scene=scene,
             system_prompt="\n".join(parts),
             injected=tuple(injected),
-            max_rounds=int(rounds.get("medium", 1) or 1),
+            max_rounds=int(rounds.get(intensity, rounds.get("medium", 1)) or 1),
+            intensity=intensity,
         )
 
     @staticmethod
