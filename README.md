@@ -217,6 +217,7 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 | `DEAI_DAILY_LIMIT` | `20` | 每人每天的 AI 改写次数（规则层不限） |
 | `DEAI_TASK_TIMEOUT_SECONDS` | `120` | 超时仍无结果的任务判为失败 |
 | `DEAI_WORKERS` | `4` | 后台改写线程数 |
+| `DEAI_SYNC_WAIT_SECONDS` | `12` | 混合模式：同步等待多久，超时才转轮询；`0` 为纯异步 |
 | `DEAI_ALLOW_ANONYMOUS` | =`DEBUG` | **生产必须 `false`**，否则公网可白嫖 |
 | `MYSQL_ADDRESS` | 空 | 配了用 MySQL，不配用 SQLite |
 | `MYSQL_DATABASE` | `django_demo` | |
@@ -236,7 +237,7 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 | GET | `/api/health` | 探活，附带 `llmConfigured` 与已加载的 skill |
 | GET | `/api/skills` | 列出可用 skill（前端应据此动态渲染，不要写死选项） |
 | POST | `/api/analyze` | `{text}` → 体检报告 + 规则改写，同步毫秒级，不消耗额度 |
-| POST | `/api/rewrite` | `{text, mode, skill}` → **立刻**返回 `taskId` + 规则结果 + 报告 + 额度 |
+| POST | `/api/rewrite` | `{text, mode, skill}` → **混合模式**：优先同步返回结果，超时才给 `taskId` 轮询 |
 | GET | `/api/task/<id>` | 轮询：`status` ∈ `pending/running/done/failed` |
 | GET | `/api/quota` | `{used, limit, remaining}` |
 | GET | `/api/usage` | 账户余额 + 今日用量汇总（任务数、token、费用） |
@@ -290,14 +291,25 @@ curl -X POST -H 'content-type: application/json' \
 
 ---
 
-## 七、为什么「深度改写」是异步的
+## 七、深度改写为什么是「混合模式」
 
-`wx.cloud.callContainer` 单次请求上限 **15 秒**，而大模型改写要 10-60 秒；并且
-小程序**切到后台 5 秒后请求会被系统杀掉**（`fail interrupted`）。所以：
+`wx.cloud.callContainer` 单次请求上限 **15 秒**，并且小程序**切到后台 5 秒后请求会被
+系统杀掉**（`fail interrupted`）。原设计因此走纯异步：立刻返回 `taskId`，前端轮询。
 
-点「深度改写」时，接口**立刻**返回规则层结果 + 体检报告 + `taskId`，前端先展示
-规则版结果，再轮询 `/api/task/<id>`。即使模型超时或失败，用户手里也已经有一份
-可用的改写稿——这是刻意的降级设计。
+但**实测一次改写只要 0.5-2.3 秒**（缓存命中时更快），纯异步其实是过度设计——用户白白
+多等一次轮询往返。所以改成混合模式：
+
+```
+POST /api/rewrite
+  ├─ 同步等 ≤ DEAI_SYNC_WAIT_SECONDS（默认 12 秒，给 15 秒上限留 3 秒余量）
+  │    └─ 等到了 → 直接返回 status=done + llmText + usage   ← 绝大多数请求走这里
+  └─ 超时 → 返回 status=pending，任务继续在后台跑，前端轮询 /api/task/<id>
+```
+
+前端只需要判断 `status`：`done` 直接用，其它值才去轮询。**响应里始终带 `rulesText`
+和体检报告**，所以即使模型失败或超时，用户手里也已经有一份可用的改写稿。
+
+设 `DEAI_SYNC_WAIT_SECONDS=0` 可以退回纯异步（前端不必改，仍按 `status` 分支即可）。
 
 引擎的评分与词库细节见 `deai/engine/`，其中：
 

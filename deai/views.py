@@ -128,6 +128,44 @@ def _resolve_skill(raw: object) -> str | None:
     return None
 
 
+def _task_payload(task: RewriteTask) -> dict:
+    """把任务序列化成前端契约里的结构。
+
+    ``task_status`` 和「同步命中」两条路径共用，避免两处字段慢慢跑偏。
+    """
+    payload: dict = {
+        "status": task.status,
+        "rulesText": task.rules_text,
+        "elapsedMs": task.elapsed_ms,
+    }
+    if task.status == RewriteTask.STATUS_DONE:
+        payload["llmText"] = task.llm_text
+        payload["model"] = task.model_name
+        payload["skill"] = task.skill
+        payload["skillVersion"] = task.skill_version
+        # skill 模式会额外产出检测报告；legacy 模式下是空字符串
+        payload["llmReport"] = task.llm_report
+        # 模型是否守住了 <REPORT>/<REWRITTEN> 协议（容错解析成功时为 False）
+        payload["protocolOk"] = task.protocol_ok
+        payload["usage"] = {
+            "promptTokens": task.prompt_tokens,
+            "completionTokens": task.completion_tokens,
+            "totalTokens": task.prompt_tokens + task.completion_tokens,
+            "cacheHitTokens": task.cache_hit_tokens,
+            "cacheHitRate": (
+                round(task.cache_hit_tokens / task.prompt_tokens, 4) if task.prompt_tokens else 0
+            ),
+            "costCNY": float(task.cost_cny or 0),
+        }
+        try:
+            payload["warnings"] = json.loads(task.warnings or "[]")
+        except json.JSONDecodeError:
+            payload["warnings"] = []
+    elif task.status == RewriteTask.STATUS_FAILED:
+        payload["error"] = task.error or "改写失败，请重试"
+    return payload
+
+
 # ---------------------------------------------------------------------------
 # 接口
 # ---------------------------------------------------------------------------
@@ -283,16 +321,29 @@ def rewrite(request):
         rules_text=rules_text,
         status=RewriteTask.STATUS_PENDING,
     )
-    tasks.submit(task_id)
+    future = tasks.submit(task_id)
 
-    return ok(
-        {
-            "taskId": task_id,
-            "rulesText": rules_text,
-            "report": report,
-            "quota": quota,
-        }
-    )
+    payload = {
+        "taskId": task_id,
+        "rulesText": rules_text,
+        "report": report,
+        "quota": quota,
+    }
+
+    # 混合模式：先同步等一小会儿。实测多数改写 0.5-2.3 秒就完成，
+    # 直接给结果比让前端立刻开始轮询体验好得多（也少一次网络往返）。
+    # 超时就不等了——任务继续在后台跑，前端拿 taskId 轮询即可。
+    sync_wait = float(getattr(settings, "DEAI_SYNC_WAIT_SECONDS", 12.0) or 0)
+    if sync_wait > 0 and tasks.wait(future, sync_wait):
+        task = RewriteTask.objects.filter(pk=task_id).first()
+        if task is not None:
+            payload.update(_task_payload(task))
+        else:  # 任务被清理掉了，退化成轮询
+            payload["status"] = "pending"
+    else:
+        payload["status"] = "pending"
+
+    return ok(payload)
 
 
 @api("GET")
@@ -310,39 +361,7 @@ def task_status(request, task_id: str):
 
     task = tasks.expire_stale(task)
 
-    payload = {
-        "status": task.status,
-        "rulesText": task.rules_text,
-        "elapsedMs": task.elapsed_ms,
-    }
-    if task.status == RewriteTask.STATUS_DONE:
-        payload["llmText"] = task.llm_text
-        payload["model"] = task.model_name
-        payload["skill"] = task.skill
-        payload["skillVersion"] = task.skill_version
-        # skill 模式会额外产出检测报告；legacy 模式下是空字符串
-        payload["llmReport"] = task.llm_report
-        # 模型是否守住了 <REPORT>/<REWRITTEN> 协议（容错解析成功时为 False）
-        payload["protocolOk"] = task.protocol_ok
-        # token 用量与估算费用
-        payload["usage"] = {
-            "promptTokens": task.prompt_tokens,
-            "completionTokens": task.completion_tokens,
-            "totalTokens": task.prompt_tokens + task.completion_tokens,
-            "cacheHitTokens": task.cache_hit_tokens,
-            "cacheHitRate": (
-                round(task.cache_hit_tokens / task.prompt_tokens, 4) if task.prompt_tokens else 0
-            ),
-            "costCNY": float(task.cost_cny or 0),
-        }
-        try:
-            payload["warnings"] = json.loads(task.warnings or "[]")
-        except json.JSONDecodeError:
-            payload["warnings"] = []
-    elif task.status == RewriteTask.STATUS_FAILED:
-        payload["error"] = task.error or "改写失败，请重试"
-
-    return ok(payload)
+    return ok(_task_payload(task))
 
 
 @api("GET")

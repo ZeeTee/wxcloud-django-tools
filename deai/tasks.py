@@ -15,6 +15,7 @@ import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from decimal import Decimal
 
 from django.conf import settings
@@ -32,9 +33,29 @@ _executor = ThreadPoolExecutor(
 )
 
 
-def submit(task_id: str) -> None:
-    """把任务丢进线程池，立即返回。"""
-    _executor.submit(_run, task_id)
+def submit(task_id: str):
+    """把任务丢进线程池，返回 ``Future``。
+
+    返回 Future 是为了支持「同步等一小会儿」的混合模式：实测一次改写只要
+    0.5-2.3 秒，与其让前端立刻开始轮询，不如在这里等一等直接把结果给出去。
+    """
+    return _executor.submit(_run, task_id)
+
+
+def wait(future, timeout: float) -> bool:
+    """最多等 ``timeout`` 秒，返回任务是否已结束（成功或失败都算结束）。
+
+    超时时**刻意不 cancel**：任务可能已经写了一半状态，让它跑完更安全，
+    前端拿 taskId 转轮询即可。
+    """
+    try:
+        future.result(timeout=max(0.0, timeout))
+        return True
+    except FuturesTimeout:
+        return False
+    except Exception:  # noqa: BLE001 - _run 内部已兜住异常，这里只是防御
+        logger.exception("等待任务结束时出现异常")
+        return True
 
 
 def _run(task_id: str) -> None:

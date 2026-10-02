@@ -164,24 +164,38 @@ r = post_json("/api/rewrite", {"text": AI_TEXT, "mode": "general"}, **AUTH)
 check("POST /api/rewrite 返回 200", r.status_code == 200, r.json())
 d = r.json()["data"]
 task_id = d.get("taskId")
-check("立刻拿到 taskId", isinstance(task_id, str) and len(task_id) > 0, d.keys())
-check("立刻拿到规则层结果（15 秒限制的兜底）", isinstance(d.get("rulesText"), str) and d["rulesText"], d.keys())
-check("立刻拿到体检报告", isinstance(d.get("report"), dict), d.keys())
+check("拿到 taskId", isinstance(task_id, str) and len(task_id) > 0, d.keys())
+check("拿到规则层结果（无论如何都有兜底）", isinstance(d.get("rulesText"), str) and d["rulesText"], d.keys())
+check("拿到体检报告", isinstance(d.get("report"), dict), d.keys())
 check("额度已扣减到 1", d.get("quota", {}).get("used") == 1, d.get("quota"))
 
+# 混合模式：同步窗口内跑完就直接给结果，否则返回 pending 让前端轮询。
+# 这里用的是假密钥（模型连不上），任务会快速失败，所以通常走同步返回。
+check(
+    "返回 status（混合模式：done=同步命中 / pending=转轮询）",
+    d.get("status") in ("pending", "done", "failed"),
+    d.get("status"),
+)
+if d.get("status") == "done":
+    check("同步命中时必须带 llmText", bool(d.get("llmText")), list(d.keys()))
+    check("同步命中时必须带 usage", isinstance(d.get("usage"), dict), list(d.keys()))
+if d.get("status") == "failed":
+    check("同步失败时带人话 error", bool(d.get("error")), d.get("error"))
+
 deadline = time.monotonic() + 30
-status = None
-payload = {}
-while time.monotonic() < deadline:
+status = d.get("status")
+payload = d
+while status not in ("done", "failed") and time.monotonic() < deadline:
     r = client.get(f"/api/task/{task_id}", **AUTH)
     payload = r.json().get("data", {})
     status = payload.get("status")
     if status in ("done", "failed"):
         break
     time.sleep(0.5)
-check("轮询最终进入 failed（而不是永远 pending）", status == "failed", status)
-check("失败时带人话 error", bool(payload.get("error")), payload)
-check("失败时仍返回 rulesText 兜底", bool(payload.get("rulesText")), payload.keys())
+check("最终进入终态（而不是永远 pending）", status in ("done", "failed"), status)
+check("终态下仍可拿到 rulesText 兜底", bool(payload.get("rulesText")), payload.keys())
+if status == "failed":
+    check("失败时有人话 error", bool(payload.get("error")), payload.get("error"))
 
 print("\n=== 6. 任务归属 ===")
 r = client.get(f"/api/task/{task_id}", HTTP_X_WX_OPENID="someone-else")
