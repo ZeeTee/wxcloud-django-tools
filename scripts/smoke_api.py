@@ -71,6 +71,45 @@ check("GET /api/health 返回 200", r.status_code == 200, r.status_code)
 body = r.json()
 check("health 信封正确", body.get("ok") is True and "llmConfigured" in body.get("data", {}), body)
 check("health 识别到已配置密钥", body["data"]["llmConfigured"] is True, body)
+check("health 暴露了已加载的 skill", "humanizer" in body["data"].get("skills", []), body["data"].get("skills"))
+
+print("\n=== 1.1 Skill 列表 ===")
+r = client.get("/api/skills", **AUTH)
+check("GET /api/skills 返回 200", r.status_code == 200, r.status_code)
+d = r.json().get("data", {})
+slugs = [s.get("slug") for s in d.get("skills", [])]
+check("含 humanizer", "humanizer" in slugs, slugs)
+check("含 legacy 回退项", "legacy" in slugs, slugs)
+check("默认 skill 是 humanizer", d.get("default") == "humanizer", d.get("default"))
+check(
+    "场景列表含全部四个场景",
+    set(d.get("scenes", [])) == {"general", "xhs", "academic", "official"},
+    d.get("scenes"),
+)
+check(
+    "强度档位齐全",
+    set(d.get("intensities", [])) == {"light", "medium", "heavy"},
+    d.get("intensities"),
+)
+humanizer = next((s for s in d.get("skills", []) if s.get("slug") == "humanizer"), {})
+check("humanizer 带版本号", bool(humanizer.get("version")), humanizer)
+
+print("\n=== 1.2 用量与余额 ===")
+r = client.get("/api/usage", **AUTH)
+check("GET /api/usage 返回 200", r.status_code == 200, r.status_code)
+d = r.json().get("data", {})
+check(
+    "返回余额或余额错误（假密钥下应为错误）",
+    ("balance" in d) or ("balanceError" in d),
+    list(d.keys()),
+)
+check("返回今日用量汇总", isinstance(d.get("today"), dict), list(d.keys()))
+today = d.get("today", {})
+check(
+    "今日用量字段齐全",
+    {"tasks", "done", "failed", "promptTokens", "completionTokens", "costCNY"} <= set(today),
+    today,
+)
 
 print("\n=== 1.5 模板原有功能（确认整合没有把它们改坏）===")
 r = client.get("/api/count", **AUTH)
@@ -112,6 +151,18 @@ check("缺字段 -> 400 TEXT_EMPTY", r.status_code == 400 and r.json()["error"][
 r = client.get("/api/analyze", **AUTH)
 check("GET 打 POST 接口 -> 405 且是 JSON", r.status_code == 405 and r.json()["error"]["code"] == "METHOD_NOT_ALLOWED", r.status_code)
 
+print("\n=== 3.5 skill 参数校验 ===")
+r = post_json("/api/rewrite", {"text": AI_TEXT, "skill": "no-such-skill"}, **AUTH)
+check(
+    "不存在的 skill -> 400 SKILL_NOT_FOUND（不静默兜底）",
+    r.status_code == 400 and r.json()["error"]["code"] == "SKILL_NOT_FOUND",
+    r.json(),
+)
+check(
+    "非法 skill 不消耗额度（校验发生在扣额度之前）",
+    client.get("/api/quota", **AUTH).json()["data"]["used"] == 0,
+)
+
 print("\n=== 4. 额度 ===")
 r = client.get("/api/quota", **AUTH)
 q = r.json()["data"]
@@ -122,30 +173,89 @@ r = post_json("/api/rewrite", {"text": AI_TEXT, "mode": "general"}, **AUTH)
 check("POST /api/rewrite 返回 200", r.status_code == 200, r.json())
 d = r.json()["data"]
 task_id = d.get("taskId")
-check("立刻拿到 taskId", isinstance(task_id, str) and len(task_id) > 0, d.keys())
-check("立刻拿到规则层结果（15 秒限制的兜底）", isinstance(d.get("rulesText"), str) and d["rulesText"], d.keys())
-check("立刻拿到体检报告", isinstance(d.get("report"), dict), d.keys())
+check("拿到 taskId", isinstance(task_id, str) and len(task_id) > 0, d.keys())
+check("拿到规则层结果（无论如何都有兜底）", isinstance(d.get("rulesText"), str) and d["rulesText"], d.keys())
+check("拿到体检报告", isinstance(d.get("report"), dict), d.keys())
 check("额度已扣减到 1", d.get("quota", {}).get("used") == 1, d.get("quota"))
 
+# 混合模式：同步窗口内跑完就直接给结果，否则返回 pending 让前端轮询。
+# 这里用的是假密钥（模型连不上），任务会快速失败，所以通常走同步返回。
+check(
+    "返回 status（混合模式：done=同步命中 / pending=转轮询）",
+    d.get("status") in ("pending", "done", "failed"),
+    d.get("status"),
+)
+if d.get("status") == "done":
+    check("同步命中时必须带 llmText", bool(d.get("llmText")), list(d.keys()))
+    check("同步命中时必须带 usage", isinstance(d.get("usage"), dict), list(d.keys()))
+if d.get("status") == "failed":
+    check("同步失败时带人话 error", bool(d.get("error")), d.get("error"))
+
 deadline = time.monotonic() + 30
-status = None
-payload = {}
-while time.monotonic() < deadline:
+status = d.get("status")
+payload = d
+while status not in ("done", "failed") and time.monotonic() < deadline:
     r = client.get(f"/api/task/{task_id}", **AUTH)
     payload = r.json().get("data", {})
     status = payload.get("status")
     if status in ("done", "failed"):
         break
     time.sleep(0.5)
-check("轮询最终进入 failed（而不是永远 pending）", status == "failed", status)
-check("失败时带人话 error", bool(payload.get("error")), payload)
-check("失败时仍返回 rulesText 兜底", bool(payload.get("rulesText")), payload.keys())
+check("最终进入终态（而不是永远 pending）", status in ("done", "failed"), status)
+check("终态下仍可拿到 rulesText 兜底", bool(payload.get("rulesText")), payload.keys())
+if status == "failed":
+    check("失败时有人话 error", bool(payload.get("error")), payload.get("error"))
 
 print("\n=== 6. 任务归属 ===")
 r = client.get(f"/api/task/{task_id}", HTTP_X_WX_OPENID="someone-else")
 check("他人任务 -> 403 FORBIDDEN", r.status_code == 403 and r.json()["error"]["code"] == "FORBIDDEN", r.json())
 r = client.get("/api/task/does-not-exist", **AUTH)
 check("不存在的任务 -> 404 TASK_NOT_FOUND", r.status_code == 404 and r.json()["error"]["code"] == "TASK_NOT_FOUND", r.json())
+
+print("\n=== 6.5 用户反馈 ===")
+r = post_json("/api/feedback", {"taskId": "does-not-exist", "rating": "good"}, **AUTH)
+check(
+    "评价不存在的任务 -> 404 TASK_NOT_FOUND",
+    r.status_code == 404 and r.json()["error"]["code"] == "TASK_NOT_FOUND",
+    r.json(),
+)
+r = post_json("/api/feedback", {"taskId": task_id, "rating": "nonsense"}, **AUTH)
+check(
+    "非法 rating -> 400 BAD_RATING",
+    r.status_code == 400 and r.json()["error"]["code"] == "BAD_RATING",
+    r.json(),
+)
+r = post_json("/api/feedback", {"taskId": task_id, "rating": "bad", "reason": "not_natural"}, **AUTH)
+check(
+    "提交差评 -> 200 且 created=true",
+    r.status_code == 200 and r.json()["data"].get("created") is True,
+    r.json(),
+)
+r = post_json("/api/feedback", {"taskId": task_id, "rating": "good", "reason": "not_natural"}, **AUTH)
+check(
+    "重复提交视为改主意（created=false，不堆记录）",
+    r.status_code == 200 and r.json()["data"].get("created") is False,
+    r.json(),
+)
+r = post_json("/api/feedback", {"taskId": task_id, "rating": "good"}, HTTP_X_WX_OPENID="someone-else")
+check(
+    "评价他人任务 -> 403 FORBIDDEN（防刷统计）",
+    r.status_code == 403 and r.json()["error"]["code"] == "FORBIDDEN",
+    r.json(),
+)
+
+r = client.get("/api/feedback/summary", **AUTH)
+check("GET /api/feedback/summary 返回 200", r.status_code == 200, r.status_code)
+d = r.json().get("data", {})
+check("统计：total=1 / good=1（改主意后只算最后一次）", d.get("total") == 1 and d.get("good") == 1, d)
+check("返回可选原因枚举", "not_natural" in (d.get("availableReasons") or []), d.get("availableReasons"))
+
+r = client.get(f"/api/task/{task_id}", **AUTH)
+check(
+    "任务详情回填已评价状态",
+    (r.json().get("data", {}).get("feedback") or {}).get("rating") == "good",
+    r.json().get("data", {}).get("feedback"),
+)
 
 print("\n=== 7. 额度耗尽 ===")
 r = post_json("/api/rewrite", {"text": AI_TEXT}, **AUTH)

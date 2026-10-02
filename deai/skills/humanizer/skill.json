@@ -1,0 +1,43 @@
+{
+  "slug": "humanizer",
+  "name": "Humanizer 去 AI 味",
+  "version": "4.1.0",
+  "description": "去除文本中的 AI 写作痕迹，让文字读起来更像人类写作。",
+  "system": "SKILL.md",
+  "inject": [
+    {
+      "ref": "banned-words",
+      "label": "A",
+      "title": "禁用词与句式表",
+      "path": "references/banned-words.md",
+      "when": "always"
+    },
+    {
+      "ref": "structures",
+      "label": "B",
+      "title": "结构性问题清单",
+      "path": "references/structures.md",
+      "when": "always"
+    },
+    {
+      "ref": "examples",
+      "label": "C",
+      "title": "改写示例库",
+      "path": "references/examples.md",
+      "when": "always"
+    }
+  ],
+  "scenes": ["general", "xhs", "academic", "official"],
+  "defaultScene": "general",
+  "intensities": ["light", "medium", "heavy"],
+  "defaultIntensity": "medium",
+  "rounds": {
+    "light": 1,
+    "medium": 1,
+    "heavy": 2
+  },
+  "guards": {
+    "noNewFacts": true,
+    "lengthRatio": [0.6, 1.6]
+  }
+}

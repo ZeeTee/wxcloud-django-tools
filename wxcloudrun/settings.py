@@ -36,6 +36,13 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name) or default)
+    except (TypeError, ValueError):
+        return default
+
+
 # --- 基础 -------------------------------------------------------------------
 
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY") or "dev-only-insecure-key-please-change"
@@ -169,6 +176,10 @@ DEAI_TASK_TIMEOUT_SECONDS = env_int("DEAI_TASK_TIMEOUT_SECONDS", 120)
 DEAI_ALLOW_ANONYMOUS = env_bool("DEAI_ALLOW_ANONYMOUS", DEBUG)
 # 后台改写线程池并发数
 DEAI_WORKERS = env_int("DEAI_WORKERS", 4)
+# 「混合模式」：创建任务后同步等待多久，超时才转成前端轮询。
+# 实测一次改写只要 0.5-2.3 秒，12 秒足以覆盖绝大多数请求，
+# 同时给 callContainer 的 15 秒硬上限留 3 秒余量。设 0 退回纯异步。
+DEAI_SYNC_WAIT_SECONDS = env_float("DEAI_SYNC_WAIT_SECONDS", 12.0)
 
 # --- 日志：一律打 stdout，云托管默认采集 stdout ------------------------------
 

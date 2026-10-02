@@ -80,9 +80,13 @@ class TestRuleEngine(unittest.TestCase):
         self.assertEqual(out, "还有一点要注意。")
 
     def test_template_rule_does_not_cross_sentence(self):
-        """「在…方面」不能跨句匹配「存在一定门槛。一方面」。"""
+        """「在…方面」不能跨句匹配「存在一定门槛。一方面」。
+
+        注意：skill 词表确实会命中「一方面」这个套话，那是**对的**。
+        这里要验的是「跨句」——模板规则不该把「在」和「方面」隔着句子连起来。
+        """
         hits = self.engine.scan("存在一定门槛。一方面，它需要时间。")
-        crossed = [h for h in hits if "方面" in h.text]
+        crossed = [h for h in hits if "门槛" in h.text]
         self.assertEqual(crossed, [], f"模板规则跨句误匹配: {[h.text for h in crossed]}")
 
     def test_template_rule_applies_within_sentence(self):
@@ -248,6 +252,51 @@ class TestNoBrokenSentences(unittest.TestCase):
         self.assertNotIn("综上所述", out)
         self.assertNotIn("值得注意的是", out)
         self.assertIn("这件事很重要", out)
+
+
+class TestAddedContentDetection(unittest.TestCase):
+    """本功能最大的信任风险：模型为了「具体化」而编出原文没有的内容。
+
+    实测案例：原文只说「繁琐的重复性工作」，模型写成「填表、整理、来回搬运数据」。
+    这类内容读起来很具体，但全是编的，必须让用户看得见。
+    """
+
+    def test_detects_new_enumeration(self):
+        original = "AI 助手能提升效率。"
+        rewritten = "AI 助手能把填表、整理、来回搬运数据这些活儿接过去。"
+        warnings = check_fidelity(original, rewritten)
+        self.assertTrue(any("找不到出处" in w for w in warnings), f"应检测出新增内容，实际: {warnings}")
+
+    def test_no_false_positive_when_enumeration_came_from_original(self):
+        # 原文用「和」连接、改写换成「、」，连接词变了但内容没变，不该误报
+        original = "它支持批处理、快捷键和离线模式。"
+        rewritten = "批处理、快捷键、离线模式它都支持。"
+        warnings = check_fidelity(original, rewritten)
+        self.assertFalse(any("找不到出处" in w for w in warnings), f"不该误报: {warnings}")
+
+    def test_detects_new_quoted_phrase(self):
+        original = "他说这个方案有问题。"
+        rewritten = "他说「这根本跑不通」，方案有问题。"
+        warnings = check_fidelity(original, rewritten)
+        self.assertTrue(any("引述" in w for w in warnings), warnings)
+
+    def test_self_reported_added_facts_warns(self):
+        warnings = check_fidelity(
+            "原文很短。", "原文被改写得更长了。", added_facts="补了「填表、整理数据」这类举例"
+        )
+        self.assertTrue(any("自报" in w for w in warnings), warnings)
+
+    def test_self_reported_none_does_not_warn(self):
+        for claim in ("无", "无。", "没有", "None", "n/a", "-", ""):
+            warnings = check_fidelity("同一段文字。", "同一段文字。", added_facts=claim)
+            self.assertFalse(
+                any("自报" in w for w in warnings), f"claim={claim!r} 不该告警: {warnings}"
+            )
+
+    def test_helper_is_exported(self):
+        from deai.engine.rewriter import check_added_content
+
+        self.assertTrue(callable(check_added_content))
 
 
 class TestReportAdvice(unittest.TestCase):

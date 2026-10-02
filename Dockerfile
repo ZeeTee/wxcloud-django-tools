@@ -30,6 +30,9 @@ COPY . .
 # 刻意写成两条简单命令，避免多行续行与引号转义在 shell 里出岔子。
 RUN python manage.py check
 RUN python -c "from deai.engine import get_engine; n = len(get_engine()._rules); assert n > 100, 'lexicon missing'; print('[build] lexicon ok:', n)"
+# skill 同样要在构建期验证：SKILL.md 与 references 都是仓库里的文件，
+# 少一个（比如又被某条 ignore 规则漏掉）一样只有运行时才炸
+RUN python -c "from deai.skills import get_registry; r = get_registry(); c = r.compile('humanizer', 'general'); assert r.list(), 'no skill loaded'; assert '【附录 A】' in c.system_prompt, 'references not injected'; print('[build] skills ok:', [s.slug for s in r.list()], c.prompt_chars, 'chars')"
 
 # 端口必须与控制台「服务设置 / 发布时」填写的端口完全一致，否则 Readiness probe failed
 EXPOSE 80
