@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -23,6 +24,45 @@ from functools import lru_cache
 from pathlib import Path
 
 from .textutil import cleanup_punct
+
+logger = logging.getLogger(__name__)
+
+# skill 禁用词表的位置（相对本文件）。engine 不该硬依赖 skills，
+# 读不到就跳过——它必须能脱离 skills 目录独立运行。
+_SKILL_WORDS = (
+    Path(__file__).resolve().parent.parent
+    / "skills"
+    / "humanizer"
+    / "references"
+    / "banned-words.md"
+)
+
+
+@lru_cache(maxsize=1)
+def _load_skill_rules() -> tuple[dict, ...]:
+    """从 skill 的禁用词表派生规则；失败时返回空并记一条日志。
+
+    返回 tuple 是为了配合 lru_cache（dict 不可哈希，但 tuple 里可以放 dict，
+    只是不能再被 hash —— 所以这里不用 lru_cache 的返回值做 key，仅做缓存）。
+    """
+    try:
+        from .skill_lexicon import parse_banned_words
+    except ImportError:  # pragma: no cover - 理论上不会发生
+        return ()
+
+    if not _SKILL_WORDS.is_file():
+        logger.info("没有找到 skill 禁用词表，跳过：%s", _SKILL_WORDS)
+        return ()
+
+    try:
+        text = _SKILL_WORDS.read_text(encoding="utf-8")
+        rules = parse_banned_words(text)
+    except (OSError, ValueError):
+        logger.exception("解析 skill 禁用词表失败，已跳过：%s", _SKILL_WORDS)
+        return ()
+
+    logger.info("从 skill 禁用词表补充了 %d 条标记规则", len(rules))
+    return tuple(rules)
 
 # 词库目录刻意叫 lexicon 而不是 data：
 # `data/` 是 .gitignore / .dockerignore 里的常见条目，而 Git 的无斜杠模式会匹配
@@ -185,6 +225,7 @@ class _Rule:
     # 命中阈值条件列表 [(标称次数, 单位)]，单位 kchar=每千字 / doc=全篇 / para=每段
     thresholds: tuple[tuple[int, str], ...] = ((1, "doc"),)
     source: str = ""  # 原始 from 文本，用于「长串优先」排序
+    origin: str = ""  # 规则出处（如 skill:banned-words），用于区分与统计
 
     @property
     def applies(self) -> bool:
@@ -310,6 +351,11 @@ class RuleEngine:
         self._patterns: list[_Rule] = []
         self._build_replacements(raw.get("replacements", []))
         self._build_flagged(raw.get("flagged", []))
+        # 把 skill 禁用词表也编进来：单一数据源，模型侧和规则侧不再各说各话。
+        # 用不同的 id 前缀，否则两批规则各自从 0 编号会撞 id。
+        skill_items = _load_skill_rules()
+        if skill_items:
+            self._build_flagged(skill_items, id_prefix="S")
         self._build_patterns(raw.get("patterns", []))
         # 长串优先：避免短规则吃掉长规则的区间。
         # 必须用原始 from 文本排序 —— 模板规则的 literal 是 None，用它会全部排到最后。
@@ -355,7 +401,7 @@ class RuleEngine:
                 )
             )
 
-    def _build_flagged(self, items: list[dict]) -> None:
+    def _build_flagged(self, items: list[dict], id_prefix: str = "F") -> None:
         for idx, item in enumerate(items):
             src = str(item.get("pattern", "")).strip()
             if not src:
@@ -364,7 +410,7 @@ class RuleEngine:
             key, name = classify(src)
             self._rules.append(
                 _Rule(
-                    rule_id=f"F{idx:03d}",
+                    rule_id=f"{id_prefix}{idx:03d}",
                     mode="flag",
                     severity=_severity_of(item.get("severity")),
                     reason=reason or "高危 AI 用词",
@@ -375,6 +421,7 @@ class RuleEngine:
                     literal=src,
                     replacement=None,
                     source=src,
+                    origin=str(item.get("source") or ""),
                 )
             )
 

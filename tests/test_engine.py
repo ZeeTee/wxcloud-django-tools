@@ -80,9 +80,13 @@ class TestRuleEngine(unittest.TestCase):
         self.assertEqual(out, "还有一点要注意。")
 
     def test_template_rule_does_not_cross_sentence(self):
-        """「在…方面」不能跨句匹配「存在一定门槛。一方面」。"""
+        """「在…方面」不能跨句匹配「存在一定门槛。一方面」。
+
+        注意：skill 词表确实会命中「一方面」这个套话，那是**对的**。
+        这里要验的是「跨句」——模板规则不该把「在」和「方面」隔着句子连起来。
+        """
         hits = self.engine.scan("存在一定门槛。一方面，它需要时间。")
-        crossed = [h for h in hits if "方面" in h.text]
+        crossed = [h for h in hits if "门槛" in h.text]
         self.assertEqual(crossed, [], f"模板规则跨句误匹配: {[h.text for h in crossed]}")
 
     def test_template_rule_applies_within_sentence(self):
