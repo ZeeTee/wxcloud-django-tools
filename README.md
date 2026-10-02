@@ -101,7 +101,15 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 └── tests/
     ├── test_engine.py          引擎单测（不需要 Django）
     └── test_skills.py          skill 编译与输出解析单测
+
+docs/                          设计依据（不是代码，但值得留档）
+├── 去AI味-工程素材包.md        中文 AI 腔特征清单、词库来源、两版提示词原型
+└── 微信云托管-实现规范笔记.md    callContainer / Django 模板 / 鉴权 / 计费的官方依据
 ```
+
+> `docs/` 被 `.dockerignore` 排除，不会进镜像；它只是留给维护者的背景材料。
+> 词库（`deai/engine/lexicon/rules.json`）的来源与取舍、以及为什么
+> `callContainer` 必须异步，都能在这两份文档里找到出处。
 
 ---
 
