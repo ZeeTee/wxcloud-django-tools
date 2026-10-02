@@ -212,6 +212,51 @@ check("他人任务 -> 403 FORBIDDEN", r.status_code == 403 and r.json()["error"
 r = client.get("/api/task/does-not-exist", **AUTH)
 check("不存在的任务 -> 404 TASK_NOT_FOUND", r.status_code == 404 and r.json()["error"]["code"] == "TASK_NOT_FOUND", r.json())
 
+print("\n=== 6.5 用户反馈 ===")
+r = post_json("/api/feedback", {"taskId": "does-not-exist", "rating": "good"}, **AUTH)
+check(
+    "评价不存在的任务 -> 404 TASK_NOT_FOUND",
+    r.status_code == 404 and r.json()["error"]["code"] == "TASK_NOT_FOUND",
+    r.json(),
+)
+r = post_json("/api/feedback", {"taskId": task_id, "rating": "nonsense"}, **AUTH)
+check(
+    "非法 rating -> 400 BAD_RATING",
+    r.status_code == 400 and r.json()["error"]["code"] == "BAD_RATING",
+    r.json(),
+)
+r = post_json("/api/feedback", {"taskId": task_id, "rating": "bad", "reason": "not_natural"}, **AUTH)
+check(
+    "提交差评 -> 200 且 created=true",
+    r.status_code == 200 and r.json()["data"].get("created") is True,
+    r.json(),
+)
+r = post_json("/api/feedback", {"taskId": task_id, "rating": "good", "reason": "not_natural"}, **AUTH)
+check(
+    "重复提交视为改主意（created=false，不堆记录）",
+    r.status_code == 200 and r.json()["data"].get("created") is False,
+    r.json(),
+)
+r = post_json("/api/feedback", {"taskId": task_id, "rating": "good"}, HTTP_X_WX_OPENID="someone-else")
+check(
+    "评价他人任务 -> 403 FORBIDDEN（防刷统计）",
+    r.status_code == 403 and r.json()["error"]["code"] == "FORBIDDEN",
+    r.json(),
+)
+
+r = client.get("/api/feedback/summary", **AUTH)
+check("GET /api/feedback/summary 返回 200", r.status_code == 200, r.status_code)
+d = r.json().get("data", {})
+check("统计：total=1 / good=1（改主意后只算最后一次）", d.get("total") == 1 and d.get("good") == 1, d)
+check("返回可选原因枚举", "not_natural" in (d.get("availableReasons") or []), d.get("availableReasons"))
+
+r = client.get(f"/api/task/{task_id}", **AUTH)
+check(
+    "任务详情回填已评价状态",
+    (r.json().get("data", {}).get("feedback") or {}).get("rating") == "good",
+    r.json().get("data", {}).get("feedback"),
+)
+
 print("\n=== 7. 额度耗尽 ===")
 r = post_json("/api/rewrite", {"text": AI_TEXT}, **AUTH)
 check("第 2 次改写成功（used=2）", r.status_code == 200 and r.json()["data"]["quota"]["used"] == 2, r.json().get("data", {}).get("quota"))

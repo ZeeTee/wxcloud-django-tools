@@ -29,6 +29,8 @@ urlpatterns = [
     path("api/rewrite", deai_views.rewrite, name="deai-rewrite"),
     path("api/task/<str:task_id>", deai_views.task_status, name="deai-task-status"),
     path("api/quota", deai_views.quota, name="deai-quota"),
+    path("api/feedback", deai_views.feedback, name="deai-feedback"),
+    path("api/feedback/summary", deai_views.feedback_summary, name="deai-feedback-summary"),
     path("api/skills", deai_views.skills, name="deai-skills"),
     path("api/usage", deai_views.usage, name="deai-usage"),
 

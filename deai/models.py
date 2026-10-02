@@ -63,6 +63,52 @@ class RewriteTask(models.Model):
         return f"<RewriteTask {self.id} {self.status}>"
 
 
+class Feedback(models.Model):
+    """用户对一次改写结果的评价。
+
+    为什么重要：在没有自动评测的情况下，这是**唯一**能知道「改得好不好」的信号。
+    没有它，改 prompt 只能靠手感，而且永远不知道线上真实效果。
+
+    只存 task_id 不冗余 skill/scene/intensity——统计时 join 任务表即可，
+    避免两处数据不一致。
+    """
+
+    RATING_GOOD = "good"
+    RATING_BAD = "bad"
+    RATING_CHOICES = ((RATING_GOOD, "满意"), (RATING_BAD, "不满意"))
+
+    # 负面评价的原因标签。枚举而不是自由文本，是为了能统计出
+    # 「哪类问题最多」——那才是改进 prompt 的依据。
+    REASON_CHOICES = (
+        "added_facts",  # 加了原文没有的内容
+        "lost_info",  # 丢了原文的信息
+        "not_natural",  # 还是很像 AI
+        "changed_meaning",  # 意思被改了
+        "too_casual",  # 改得太随意/口语
+        "too_formal",  # 改得太正式
+        "too_long",  # 变啰嗦了
+        "too_short",  # 变短了、信息变少
+        "other",
+    )
+
+    task_id = models.CharField(max_length=40, db_index=True)
+    openid = models.CharField(max_length=64, db_index=True)
+    rating = models.CharField(max_length=8, choices=RATING_CHOICES)
+    reason = models.CharField(max_length=32, blank=True, default="")
+    comment = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "deai_feedback"
+        # 一个用户对一个任务只保留一条：重复提交视为「改主意」，
+        # 用 update_or_create 覆盖，而不是堆出多条自相矛盾的记录。
+        unique_together = ("task_id", "openid")
+
+    def __str__(self) -> str:  # pragma: no cover - 仅调试用
+        return f"<Feedback {self.task_id} {self.rating}>"
+
+
 class QuotaUsage(models.Model):
     """按天统计的免费额度。规则层不计次，只有 AI 深度改写才消耗。"""
 

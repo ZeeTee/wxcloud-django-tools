@@ -246,6 +246,8 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 | GET | `/api/task/<id>` | 轮询：`status` ∈ `pending/running/done/failed` |
 | GET | `/api/quota` | `{used, limit, remaining}` |
 | GET | `/api/usage` | 账户余额 + 今日用量汇总（任务数、token、费用） |
+| POST | `/api/feedback` | `{taskId, rating, reason?, comment?}` → 提交对改写结果的评价 |
+| GET | `/api/feedback/summary` | 当前用户的评价统计（好评率、差评原因分布） |
 
 * `mode` 取 `general`（通用）、`xhs`（小红书）、`academic`（学术/研究报告）、
   `official`（公文/职场汇报），决定 skill 的场景覆盖。
@@ -268,6 +270,34 @@ academic 场景明明写着「不要口语化」，模型照样写成「这两�
 **另一条经验：给正反例比给规则有效得多。** 光写「不要口语化」几乎没用；
 补上「『深度学习这几年进展很快』✗ / 『近年来深度学习领域进展迅速』✓」这样的对照，
 效果立竿见影。`overrides/academic.json` 和 `intensity=light` 的提示词都用了这个手法。
+
+### 用户反馈：没有自动评测时的唯一信号
+
+当前**没有**自动评测，所以「改得好不好」只能靠用户说。这也是唯一能发现
+「prompt 改坏了」的线上信号。
+
+`POST /api/feedback` 接受 `rating`（`good`/`bad`）+ 可选的 `reason` 标签 + 自由文本。
+`reason` 是**枚举**而非自由文本，因为要能统计出「哪类问题最多」——那才是改进 prompt
+的依据：
+
+```
+added_facts     加了原文没有的内容      lost_info       丢了原文的信息
+not_natural     还是很像 AI             changed_meaning 意思被改了
+too_casual      改得太随意/口语         too_formal      改得太正式
+too_long        变啰嗦了                too_short       变短了
+```
+
+两个刻意的设计：
+
+* **必须校验任务归属**。不校验的话，任何人拿到一个 `taskId` 就能刷评价，
+  统计就失真了——而统计是这个接口存在的全部意义。
+* **同一任务同一用户只保留一条**（`unique_together` + `update_or_create`）。
+  重复提交视为「改主意」并覆盖，而不是堆出多条自相矛盾的记录。
+
+`GET /api/task/<id>` 会回填 `feedback` 字段，前端据此显示「你已评价」。
+注意它在 status 分支**之外**——失败的任务也能评价（「它根本没改对」也是有效反馈）。
+
+`/api/feedback/summary` 只返回当前用户自己的统计，全局统计请直接查库。
 
 ### 保真校验（这个功能最大的信任风险）
 

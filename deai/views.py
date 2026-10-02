@@ -27,7 +27,7 @@ from django.utils import timezone
 
 from .engine.llm import LLMError as LLMBalanceError
 from .engine.llm import get_balance
-from .models import RewriteTask
+from .models import Feedback, RewriteTask
 from .skills import get_registry
 
 logger = logging.getLogger(__name__)
@@ -139,6 +139,11 @@ def _task_payload(task: RewriteTask) -> dict:
         "rulesText": task.rules_text,
         "elapsedMs": task.elapsed_ms,
     }
+    # 已评价过就带上，前端可以显示「你已评价」并回填选项。
+    # 放在 status 分支之外：失败的任务也可能被评价（「它根本没改对」也是一种反馈）。
+    fb = Feedback.objects.filter(task_id=task.id, openid=task.openid).first()
+    if fb is not None:
+        payload["feedback"] = {"rating": fb.rating, "reason": fb.reason}
     if task.status == RewriteTask.STATUS_DONE:
         payload["llmText"] = task.llm_text
         payload["model"] = task.model_name
@@ -388,3 +393,89 @@ def quota(request):
     if err:
         return err
     return ok(quota_service.get_quota(identity))
+
+
+@api("POST")
+def feedback(request):
+    """提交对一次改写结果的评价。
+
+    为什么要校验任务归属：不校验的话，任何人拿到一个 taskId 就能刷评价，
+    统计就失真了——而统计恰恰是这个接口存在的全部意义。
+    """
+    identity, err = _identity_or_error(request)
+    if err:
+        return err
+    data, err = _parse_body(request)
+    if err:
+        return err
+
+    task_id = str(data.get("taskId") or "").strip()
+    if not task_id:
+        return fail("TASK_NOT_FOUND", "缺少 taskId", 400)
+
+    rating = str(data.get("rating") or "").strip()
+    if rating not in (Feedback.RATING_GOOD, Feedback.RATING_BAD):
+        return fail("BAD_RATING", "rating 只能是 good 或 bad", 400)
+
+    task = RewriteTask.objects.filter(pk=task_id).only("id", "openid").first()
+    if task is None:
+        return fail("TASK_NOT_FOUND", "任务不存在或已过期", 404)
+    if task.openid != identity:
+        return fail("FORBIDDEN", "无权评价该任务", 403)
+
+    reason = str(data.get("reason") or "").strip()
+    if reason and reason not in Feedback.REASON_CHOICES:
+        # 未知标签收敛成 other，而不是丢弃——至少还能统计到「有一条说不清的差评」
+        reason = "other"
+    if rating == Feedback.RATING_GOOD:
+        # 满意时不需要问题标签，避免统计里混进无意义的 reason
+        reason = ""
+
+    comment = str(data.get("comment") or "")[:1000]
+
+    _obj, created = Feedback.objects.update_or_create(
+        task_id=task_id,
+        openid=identity,
+        defaults={"rating": rating, "reason": reason, "comment": comment},
+    )
+    logger.info(
+        "反馈 task=%s rating=%s reason=%s（%s）",
+        task_id,
+        rating,
+        reason or "-",
+        "新建" if created else "更新",
+    )
+    return ok({"accepted": True, "created": created, "rating": rating})
+
+
+@api("GET")
+def feedback_summary(request):
+    """当前用户的反馈统计。
+
+    只返回自己的数据——全局统计请直接在数据库里查，不通过公开接口暴露。
+    """
+    identity, err = _identity_or_error(request)
+    if err:
+        return err
+
+    mine = Feedback.objects.filter(openid=identity)
+    total = mine.count()
+    good = mine.filter(rating=Feedback.RATING_GOOD).count()
+    bad = mine.filter(rating=Feedback.RATING_BAD).count()
+    rows = (
+        mine.filter(rating=Feedback.RATING_BAD)
+        .exclude(reason="")
+        .values("reason")
+        .annotate(count=Count("id"))
+        .order_by("-count")
+    )
+    return ok(
+        {
+            "total": total,
+            "good": good,
+            "bad": bad,
+            "goodRate": round(good / total, 4) if total else 0,
+            "badReasons": [{"reason": r["reason"], "count": r["count"]} for r in rows],
+            "availableReasons": list(Feedback.REASON_CHOICES),
+        }
+    )
