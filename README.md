@@ -102,6 +102,7 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 │   └── tasks.py                后台线程池 + 超时判失败
 ├── scripts/
 │   ├── dev.sh                  本地一键起服务
+│   ├── init_db.py              建库 + 建表 + 校验（幂等）
 │   └── smoke_api.py            接口端到端冒烟（无需联网）
 └── tests/
     ├── test_engine.py          引擎单测（不需要 Django）
@@ -146,13 +147,35 @@ curl -s localhost:8080/api/count
 跑测试（**都不需要联网**）：
 
 ```bash
-python3 -m unittest discover -s tests -t .   # 引擎单测 43 项
-python3 scripts/smoke_api.py                 # 接口冒烟 33 项
+python3 -m unittest discover -s tests -t .   # 引擎与 skill 单测，111 项
+python3 scripts/smoke_api.py                 # 接口冒烟，58 项
 ```
 
 `smoke_api.py` 会故意把模型地址指向一个连不上的端口，从而把「建任务 → 后台线程 →
 轮询 → 失败兜底 → 配额扣减 → 鉴权」整条链路真实走一遍，同时回归模板原有的
 `/api/count` 与主页。
+
+### 数据库初始化
+
+`scripts/init_db.py` 把「建库 + 建表 + 校验」合成一条命令。**Django 的 `migrate`
+只建表不建库**——数据库不存在时连接阶段就失败了，所以这三步缺一不可：
+
+```bash
+python scripts/init_db.py                 # 建库 + 建表 + 校验
+python scripts/init_db.py --dry-run       # 只打印将要做的事
+python scripts/init_db.py --print-sql     # 只打印迁移 SQL（交给 DBA 审核 / 手工建表）
+python scripts/init_db.py --skip-db       # 跳过建库（库已存在或无 CREATE 权限）
+python scripts/init_db.py --check-only    # 只校验业务表是否齐全
+```
+
+幂等，可反复执行。本地没配 `MYSQL_ADDRESS` 时会走 SQLite：建库这步自动跳过，
+`migrate` 直接把 `.sqlite3` 文件建出来。
+
+> `--print-sql` 输出的 SQL 方言**取决于当前配置的数据库**：配了 MySQL 就是 MySQL 语法，
+> 否则是 SQLite 语法。要生成 MySQL 的建表语句，请带上 `MYSQL_ADDRESS` 运行。
+
+容器启动时也会自动 `migrate`（见 Dockerfile 的 CMD），所以**线上通常不需要手动跑**这个脚本；
+它主要服务于本地连远程库、迁移到新实例、以及人工审核 SQL 这几种场景。
 
 ---
 
@@ -166,26 +189,34 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
    - 方式 A（推荐）：绑定本仓库，构建目录填 `.`。
    - 方式 B：把仓库打成 zip 上传。
    - **端口填 `80`**（必须与 Dockerfile 的 `EXPOSE 80` 一致，否则 `Readiness probe failed`）。
-4. **配环境变量**（服务设置 → 环境变量）—— 至少这三个：
+4. **配环境变量**（服务设置 → 环境变量）—— 最少这三个：
 
    | 变量 | 值 |
    | --- | --- |
-   | `LLM_API_KEY` | 你的模型密钥 |
-   | `LLM_BASE_URL` | 如 `https://api.deepseek.com/v1` |
-   | `LLM_MODEL` | 如 `deepseek-chat` |
+   | `DJANGO_SECRET_KEY` | 随机串，生成：`python3 -c "import secrets;print(secrets.token_urlsafe(50))"` |
+   | `LLM_PROVIDER` | `deepseek`（默认）或 `openrouter` |
+   | `DEEPSEEK_API_KEY` | 对应 provider 的密钥（选 openrouter 就填 `OPENROUTER_API_KEY`） |
 
-   再补一个随机密钥：`DJANGO_SECRET_KEY`
-   （`python3 -c "import secrets;print(secrets.token_urlsafe(50))"`）。
+   其余变量都有默认值，完整清单见第五节。
 
    > 环境变量在**构建阶段读不到**，只在运行时注入，所以不要在 Dockerfile 里读。
 
-   > 如果要用云托管内 MySQL：控制台开通后会自动注入 `MYSQL_ADDRESS` 等变量，
-   > 本项目无需额外配置。**多副本必须开 MySQL**，否则各副本任务状态不一致。
+5. **开数据库（强烈建议）**：控制台 → MySQL → 开通。
 
-5. **发布**：保存后发布版本，访问 `https://<域名>/api/health` 确认
+   开通后会自动注入 `MYSQL_ADDRESS` / `MYSQL_USERNAME` / `MYSQL_PASSWORD`，
+   本项目无需改代码，容器启动时会自动 `migrate` 建表。
+
+   **为什么建议开**：不开的话走容器内 SQLite，而 `minNum: 0` 会在 30 分钟无请求后
+   缩容到 0——容器一重启，**每日额度表就归零，配额限制形同虚设**；多副本时各副本
+   数据还互不可见，轮询会查不到任务。
+
+   想确认建表结果，可在容器内执行：`python scripts/init_db.py --check-only`
+   （该脚本也能手动建库建表，见第三节）。
+
+6. **发布**：保存后发布版本，访问 `https://<域名>/api/health` 确认
    `llmConfigured: true`。
 
-6. **小程序前端**：前端是**独立项目**，不在本仓库。在那边配置：
+7. **小程序前端**：前端是**独立项目**，不在本仓库。在那边配置：
 
    ```js
    module.exports = {
@@ -197,7 +228,7 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
    并把小程序后台的**基础库最低版本设为 ≥ 2.23.0**（否则 `callContainer` 不可用）。
    前端不需要配「服务器域名」——`callContainer` 免域名校验、免备案。
 
-7. **联调**：在开发者工具里跑一次「关于」页的配置自检，确认能打通。
+8. **联调**：在开发者工具里跑一次「关于」页的配置自检，确认能打通。
 
 > ⚠️ `container.config.json` 只在「控制台一键模板部署」那一次生效；自己新建服务 +
 > 传代码包时它会被忽略，端口/规格/环境变量都要在控制台手填。
