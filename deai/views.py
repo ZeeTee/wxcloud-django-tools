@@ -26,7 +26,7 @@ from django.db.models import Count, Sum
 from django.utils import timezone
 
 from .engine.llm import LLMError as LLMBalanceError
-from .engine.llm import get_balance
+from .engine.llm import get_balance, provider_info
 from .models import Feedback, RewriteTask
 from .skills import get_registry
 
@@ -147,6 +147,7 @@ def _task_payload(task: RewriteTask) -> dict:
     if task.status == RewriteTask.STATUS_DONE:
         payload["llmText"] = task.llm_text
         payload["model"] = task.model_name
+        payload["provider"] = task.provider
         payload["skill"] = task.skill
         payload["skillVersion"] = task.skill_version
         payload["intensity"] = task.intensity
@@ -194,6 +195,8 @@ def health(request):
         {
             "status": "up",
             "llmConfigured": is_configured(),
+            # 当前用的是哪个 provider / 模型，以及可选项——换供应商时不用猜
+            "llm": provider_info(),
             "defaultSkill": DEFAULT_SKILL,
             "skills": [s.slug for s in registry.list()] + list(EXTRA_SKILLS),
             "promptFingerprints": fingerprints,

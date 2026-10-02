@@ -208,11 +208,15 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `LLM_API_KEY` | 空 | **必填**，模型密钥。只在服务端，绝不下发到小程序 |
-| `LLM_BASE_URL` | `https://api.deepseek.com/v1` | OpenAI 兼容端点 |
-| `LLM_MODEL` | `deepseek-chat` | 模型名 |
+| `LLM_PROVIDER` | `deepseek` | 选 `deepseek` 或 `openrouter`，切换只改这一行 |
+| `DEEPSEEK_API_KEY` | 空 | DeepSeek 密钥（`provider=deepseek` 时用） |
+| `OPENROUTER_API_KEY` | 空 | OpenRouter 密钥（`provider=openrouter` 时用） |
+| `LLM_API_KEY` | 空 | 兼容旧配置：上面两个专属 key 都没配时回退读它 |
+| `LLM_BASE_URL` | 空 | 留空用 provider 默认端点 |
+| `LLM_MODEL` | 空 | 留空用 provider 默认模型 |
 | `LLM_TIMEOUT` | `50` | 秒，会被夹到 ≤55 |
-| `LLM_PRICE_CACHE_IN` | `0.04` | 缓存命中输入单价（元/百万 token） |
+| `USD_CNY_RATE` | `7.2` | OpenRouter 的美元成本折算成人民币的汇率 |
+| `LLM_PRICE_CACHE_IN` | `0.04` | 缓存命中输入单价（元/百万 token），仅本地价格表用 |
 | `LLM_PRICE_IN` | `2.0` | 缓存未命中输入单价（元/百万 token） |
 | `LLM_PRICE_OUT` | `8.0` | 输出单价（元/百万 token） |
 | `DJANGO_SECRET_KEY` | 不安全默认值 | **生产必须换** |
@@ -318,6 +322,39 @@ too_long        变啰嗦了                too_short       变短了
 注意它在 status 分支**之外**——失败的任务也能评价（「它根本没改对」也是有效反馈）。
 
 `/api/feedback/summary` 只返回当前用户自己的统计，全局统计请直接查库。
+
+### 切换模型供应商（DeepSeek / OpenRouter）
+
+两个 key 可以同时配好，用 `LLM_PROVIDER` 一行切换：
+
+```bash
+LLM_PROVIDER=deepseek        # 或 openrouter
+DEEPSEEK_API_KEY=sk-...
+OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+两者都兼容 OpenAI 协议，但**有两处实质差异，代码里都做了适配**：
+
+| | DeepSeek 直连 | OpenRouter |
+| --- | --- | --- |
+| 缓存命中字段 | `prompt_cache_hit_tokens` | `prompt_tokens_details.cached_tokens` |
+| 费用 | **不返回**，按本地价格表算 | **直接返回 `cost`（美元）** |
+| 余额接口 | `/user/balance` | `/credits` + `/key` |
+
+`estimate_cost` 会标明 `source`：`provider`（供应商上报，可信）或 `local_table`
+（本地估算，仅供参考）。`/api/health` 的 `llm` 字段会回显当前 provider、模型和端点。
+
+**实测结论：这个场景下 DeepSeek 直连明显更好**（同一段文本、同一个 skill）：
+
+| | DeepSeek 直连 | OpenRouter |
+| --- | --- | --- |
+| 改写质量 | 「先把目标定下来，流程边走边调」 | 「接下来最重要的是流程要持续改进」（套话没去掉） |
+| 缓存命中 | **95.8%** | **0%**（不透传 prompt 缓存） |
+| 单次费用 | ¥0.0025 | **¥0.0288（贵 11.6 倍）** |
+
+OpenRouter 的价值在于一个 key 访问多家模型、方便对比试验；但它的代理层不透传
+DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存一失效，
+成本和延迟都会明显上去。**如果要换，建议先跑几段文本对比再决定。**
 
 ### 保真校验（这个功能最大的信任风险）
 

@@ -228,7 +228,7 @@ def rewrite(
         protocol_ok = True
 
     usage = result.usage
-    cost = llm.estimate_cost(usage)
+    cost = llm.estimate_cost(usage, result.provider)
 
     return {
         "text": polished,
@@ -237,6 +237,7 @@ def rewrite(
         "addedFacts": added_facts,
         "warnings": check_fidelity(text, polished, added_facts),
         "model": result.model,
+        "provider": result.provider,
         "mode": scene,
         "skill": used_skill,
         "skillVersion": skill_version,

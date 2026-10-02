@@ -49,6 +49,9 @@ class RewriteTask(models.Model):
     cost_cny = models.DecimalField(max_digits=12, decimal_places=6, default=0)
     error = models.TextField(blank=True, default="")
     model_name = models.CharField(max_length=64, blank=True, default="")
+    # 实际调用的是哪个 provider（deepseek / openrouter）。换供应商时效果和费用
+    # 都会变，落库才能在事后归因——尤其配合 Feedback 表看「换 provider 后好评率」
+    provider = models.CharField(max_length=16, blank=True, default="")
     warnings = models.TextField(blank=True, default="")  # JSON 数组字符串
     elapsed_ms = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)

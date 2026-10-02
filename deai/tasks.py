@@ -87,6 +87,7 @@ def _run(task_id: str) -> None:
             llm_report=result.get("report") or "",
             warnings=json.dumps(result.get("warnings") or [], ensure_ascii=False),
             model_name=result.get("model", ""),
+            provider=result.get("provider") or "",
             # 记下实际用的 skill 与版本：发生回退时这里会和请求的不一致，
             # 正好是排查「为什么这次效果不一样」的线索
             skill=result.get("skill") or task.skill,
