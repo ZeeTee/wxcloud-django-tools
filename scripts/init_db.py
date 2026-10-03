@@ -234,19 +234,25 @@ def print_migration_sql() -> None:
 
 
 def verify(conf: dict) -> bool:
-    """校验业务表是否齐全。返回是否全部就绪。"""
+    """校验业务表是否齐全。返回是否全部就绪。
+
+    **大小写不敏感**：MySQL 的 ``lower_case_table_names=1``（Linux 默认）会把表名
+    统一存成小写，于是模型的 ``Counters`` 实际建出来叫 ``counters``。
+    直接做集合比对会把建好的表误报成缺失——实测在腾讯云 CynosDB 上就踩到了。
+    Django 自己查询不受影响（MySQL 侧会做大小写折叠），所以这里也照做。
+    """
     import django
 
     django.setup()
     from django.db import connection
 
     with connection.cursor() as cur:
-        existing = set(connection.introspection.table_names(cur))
+        existing = {t.lower() for t in connection.introspection.table_names(cur)}
 
-    missing = [t for t in BUSINESS_TABLES if t not in existing]
+    missing = [t for t in BUSINESS_TABLES if t.lower() not in existing]
     log(f"数据库：{conf['name']}（{conf['engine'].split('.')[-1]}）")
     for table, desc in BUSINESS_TABLES.items():
-        mark = "✓" if table in existing else "✗ 缺失"
+        mark = "✓" if table.lower() in existing else "✗ 缺失"
         log(f"  {mark} {table:22s} {desc}")
 
     if missing:
