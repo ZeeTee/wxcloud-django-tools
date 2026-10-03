@@ -65,6 +65,11 @@ def parse_args() -> argparse.Namespace:
     group.add_argument("--print-sql", action="store_true", help="只打印迁移 SQL 后退出")
     group.add_argument("--check-only", action="store_true", help="只校验表是否齐全")
     parser.add_argument("--skip-db", action="store_true", help="跳过建库步骤")
+    parser.add_argument(
+        "--fix-tables",
+        action="store_true",
+        help="把库内已有表也转成 utf8mb4（大表会锁表，谨慎）",
+    )
     return parser.parse_args()
 
 
@@ -83,22 +88,34 @@ def db_settings() -> dict:
     }
 
 
-def create_database(conf: dict, dry_run: bool) -> bool:
-    """建库。返回是否真的执行了（False 表示跳过）。
+def ensure_database(conf: dict, dry_run: bool, fix_tables: bool) -> bool:
+    """确保库存在且字符集是 utf8mb4。返回是否真的改动了数据库。
 
-    注意必须用**独立连接且不指定库名**——Django 的连接一上来就要选库，
-    库不存在时连不上，所以我们绕开 ORM 直接用驱动。
+    这里有两件容易被忽略的事：
+
+    1. **必须用独立连接且不指定库名**——Django 的连接一上来就要选库，
+       库不存在时连不上，所以我们绕开 ORM 直接用驱动。
+    2. **库已存在不代表字符集对**。腾讯云 CynosDB 开通时默认给的库是
+       ``utf8``（即 utf8mb3，最多 3 字节），**存 emoji 会静默变成 ``?``**。
+       实测：``CONVERT('😀' USING utf8)`` → ``'?'``。用户输入一个 emoji
+       就丢字符，而且不报错——这种坑必须在这里堵住。
     """
     if not conf["engine"].endswith("mysql"):
         log(f"非 MySQL（{conf['engine'].split('.')[-1]}），跳过建库；migrate 会自动建文件")
         return False
 
-    sql = (
-        f"CREATE DATABASE IF NOT EXISTS `{conf['name']}` "
+    name = conf["name"]
+    create_sql = (
+        f"CREATE DATABASE IF NOT EXISTS `{name}` "
         "CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
     )
+    alter_sql = (
+        f"ALTER DATABASE `{name}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+    )
+
     if dry_run:
-        log(f"[dry-run] 将要执行：{sql}")
+        log(f"[dry-run] 将要执行：{create_sql}")
+        log(f"[dry-run] 若库已存在但字符集不是 utf8mb4，还会执行：{alter_sql}")
         return False
 
     try:
@@ -122,13 +139,61 @@ def create_database(conf: dict, dry_run: bool) -> bool:
         log("检查 MYSQL_ADDRESS / MYSQL_USERNAME / MYSQL_PASSWORD 是否正确")
         raise SystemExit(1)
 
+    changed = False
     try:
         with conn.cursor() as cur:
-            cur.execute(sql)
+            cur.execute(
+                "SELECT DEFAULT_CHARACTER_SET_NAME FROM information_schema.SCHEMATA "
+                "WHERE SCHEMA_NAME=%s",
+                (name,),
+            )
+            row = cur.fetchone()
+
+            if row is None:
+                cur.execute(create_sql)
+                log(f"数据库 `{name}` 已创建（utf8mb4）")
+                changed = True
+            elif str(row[0]).lower() != "utf8mb4":
+                log(f"数据库 `{name}` 已存在，但字符集是 {row[0]} —— 改成 utf8mb4")
+                cur.execute(alter_sql)
+                changed = True
+            else:
+                log(f"数据库 `{name}` 已就绪（utf8mb4）")
+
+            if fix_tables:
+                changed = _convert_tables(cur, name) or changed
+            else:
+                stale = _tables_not_utf8mb4(cur, name)
+                if stale:
+                    log(f"注意：以下表仍不是 utf8mb4：{', '.join(stale)}")
+                    log("      如果这些表是空的或很小，可以加 --fix-tables 转换")
         conn.commit()
-        log(f"数据库 `{conf['name']}` 已就绪（utf8mb4）")
     finally:
         conn.close()
+    return changed
+
+
+def _tables_not_utf8mb4(cur, schema: str) -> list[str]:
+    cur.execute(
+        "SELECT TABLE_NAME FROM information_schema.TABLES "
+        "WHERE TABLE_SCHEMA=%s AND TABLE_COLLATION NOT LIKE 'utf8mb4%%'",
+        (schema,),
+    )
+    return [r[0] for r in cur.fetchall()]
+
+
+def _convert_tables(cur, schema: str) -> bool:
+    """把库内已有表转成 utf8mb4。注意 ALTER TABLE 会锁表，大表慎用。"""
+    stale = _tables_not_utf8mb4(cur, schema)
+    if not stale:
+        return False
+    for table in stale:
+        log(f"  转换表 {table} → utf8mb4")
+        cur.execute(
+            f"ALTER TABLE `{schema}`.`{table}` "
+            "CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+        )
+    log(f"已转换 {len(stale)} 张表")
     return True
 
 
@@ -209,7 +274,7 @@ def main() -> int:
 
     log(f"目标：{conf['engine'].split('.')[-1]} / {conf['name']}")
     if not args.skip_db:
-        create_database(conf, args.dry_run)
+        ensure_database(conf, args.dry_run, args.fix_tables)
     else:
         log("按参数要求跳过建库")
 

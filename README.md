@@ -174,6 +174,31 @@ python scripts/init_db.py --check-only    # 只校验业务表是否齐全
 > `--print-sql` 输出的 SQL 方言**取决于当前配置的数据库**：配了 MySQL 就是 MySQL 语法，
 > 否则是 SQLite 语法。要生成 MySQL 的建表语句，请带上 `MYSQL_ADDRESS` 运行。
 
+#### 两个实测踩到的坑
+
+**1. 字符集必须是 `utf8mb4`，不能是 `utf8`**
+
+腾讯云 CynosDB 开通时给的库默认是 `utf8`（即 utf8mb3，最多 3 字节）。
+实测 `SELECT CONVERT('😀' USING utf8)` → `'?'`：**emoji 会静默变成问号**，
+用户输入一个 emoji 就丢字符，而且不报错。
+
+`init_db.py` 会检测库的字符集，不对就自动 `ALTER DATABASE` 改成 utf8mb4；
+已有表可以用 `--fix-tables` 一起转换（注意 `ALTER TABLE` 会锁表，大表慎用）。
+
+**2. Django 4.2 不支持 MySQL 5.7**
+
+Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproject.com/ticket/33718#comment:3)），
+连上 5.7 会直接抛 `NotSupportedError: MySQL 8 or later is required`。
+而云托管/CynosDB 上仍可能是 5.7 实例。
+
+打开 `MYSQL_ALLOW_57=true` 可以绕过版本检查。本项目在 5.7.18 上实测通过：
+连接、中文与 emoji 往返、以及全部建表 DDL 都正常——模型只用了
+`varchar` / `longtext` / `integer` / `bigint` / `datetime(6)` / `numeric` / `date`
+这些基础类型，没有 8.0 专有语法。
+
+> ⚠️ 但这**仍是官方未支持的组合**：Django 不会为 5.7 做兼容测试，将来用到窗口函数、
+> 表达式默认值之类的特性时会踩坑。**建议尽快把实例升级到 MySQL 8**，而不是长期开着这个开关。
+
 容器启动时也会自动 `migrate`（见 Dockerfile 的 CMD），所以**线上通常不需要手动跑**这个脚本；
 它主要服务于本地连远程库、迁移到新实例、以及人工审核 SQL 这几种场景。
 
@@ -260,6 +285,7 @@ python scripts/init_db.py --check-only    # 只校验业务表是否齐全
 | `DEAI_SYNC_WAIT_SECONDS` | `12` | 混合模式：同步等待多久，超时才转轮询；`0` 为纯异步 |
 | `DEAI_ALLOW_ANONYMOUS` | =`DEBUG` | **生产必须 `false`**，否则公网可白嫖 |
 | `MYSQL_ADDRESS` | 空 | 配了用 MySQL，不配用 SQLite |
+| `MYSQL_ALLOW_57` | `false` | 允许连 MySQL 5.7（见下方说明，**建议升级而非长期开启**） |
 | `MYSQL_DATABASE` | `django_demo` | |
 | `MYSQL_USERNAME` / `MYSQL_USER` | `root` | 两种命名都支持 |
 | `MYSQL_PASSWORD` | 空 | |
