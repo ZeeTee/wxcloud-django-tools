@@ -635,7 +635,121 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 
 ---
 
-## 七、深度改写为什么是「混合模式」
+## 七、数据库表结构
+
+四张业务表（另有 Django 自带的 `django_*` / `auth_*` 表，随 `migrate` 一起建，不用管）。
+
+| 表 | 用途 | 关键约束 |
+| --- | --- | --- |
+| `deai_rewrite_task` | 改写任务：状态、结果、用量、费用 | 主键 `id`；索引 `(openid, created_at)` |
+| `deai_feedback` | 用户对改写结果的评价 | 唯一 `(task_id, openid)` |
+| `deai_quota_usage` | 每日免费额度计数 | 唯一 `(openid, day)` |
+| `Counters` | 模板原有的计数器示例 | 主键 `id` |
+
+> **字符集必须是 `utf8mb4`**，否则 emoji 会静默变成 `?`（见第三节的踩坑记录）。
+> **表名大小写**：`lower_case_table_names=1`（Linux 默认）时 `Counters` 实际存为 `counters`，
+> Django 查询不受影响，但手写 SQL 时要注意。下面统一用模型里的逻辑名。
+
+---
+
+### 7.1 `deai_rewrite_task` —— 改写任务
+
+一次「AI 深度改写」就是一行。任务必须落库：`callContainer` 上限 15 秒，而模型要跑
+1-3 秒甚至更久，且轮询请求可能落到不同副本，状态不能只放进程内存。
+
+| 字段 | 类型 | 取值 / 默认 | 含义 |
+| --- | --- | --- | --- |
+| `id` | varchar(40) | 主键，`uuid4().hex` | 任务 ID，轮询时用它 |
+| `openid` | varchar(64) | 索引 | 调用者微信 openid；本地匿名调用为 `anonymous` |
+| `status` | varchar(16) | `pending`(默认) / `running` / `done` / `failed` | 任务状态。**轮询接口靠它分支** |
+| `mode` | varchar(16) | `general`(默认) / `xhs` / `academic` / `official` | 场景，决定 skill 的场景覆盖 |
+| `intensity` | varchar(16) | `light` / `medium`(默认) / `heavy` | 改写力度 |
+| `skill` | varchar(32) | `humanizer`(默认) / `legacy` | **实际生效**的 skill。编译失败回退时这里会与请求值不同——正是排查线索 |
+| `skill_version` | varchar(16) | 可空 | skill 版本号（`skill.json` 里**手写**，可能忘记 bump） |
+| `prompt_fingerprint` | varchar(16) | 可空 | 编译后 prompt 的 sha256 前 12 位，**不会说谎**，用于精确定位版本 |
+| `source_text` | longtext | | 用户原始输入（≤ `DEAI_MAX_INPUT_CHARS`） |
+| `rules_text` | longtext | 可空 | 规则层改写结果。**模型失败时这就是兜底内容** |
+| `llm_text` | longtext | 可空 | 大模型改写结果（`<REWRITTEN>` 内容） |
+| `llm_report` | longtext | 可空 | 模型自评报告（`<REPORT>` 内容），legacy 模式为空 |
+| `protocol_ok` | bool | 默认 `true` | 模型是否守住输出协议；`false` 表示走了容错解析——变多说明 prompt 要调 |
+| `llm_added_facts` | longtext | 可空 | 模型**自报**补充了哪些原文没有的内容，供用户核对 |
+| `prompt_tokens` | int | 默认 0 | 输入 token |
+| `completion_tokens` | int | 默认 0 | 输出 token |
+| `cache_hit_tokens` | int | 默认 0 | 命中 prompt 缓存的 token。**成本关键**：命中价与未命中价差 50 倍，实测直连 DeepSeek 时命中率约 96% |
+| `cost_cny` | numeric(12,6) | 默认 0 | 本次费用（元）。供应商上报的美元成本折算，或按本地价格表估算 |
+| `error` | longtext | 可空 | 失败原因（人话，直接给用户看） |
+| `model_name` | varchar(64) | 可空 | 模型实际返回的模型名（可能与你请求的不同，如 `deepseek-chat` → `deepseek-flash`） |
+| `provider` | varchar(16) | 可空 | 实际用的供应商：`deepseek` / `openrouter` |
+| `warnings` | longtext | 可空 | 保真校验提示，**JSON 数组字符串**（不是关联表） |
+| `elapsed_ms` | int | 默认 0 | 模型调用耗时（毫秒），不含排队 |
+| `created_at` | datetime(6) | 自动写入 | 创建时间，索引字段 |
+| `updated_at` | datetime(6) | 自动更新 | 最后更新时间 |
+
+索引 `deai_task_openid_created_idx (openid, created_at)` 是为「查我的历史任务」建的。
+
+### 7.2 `deai_feedback` —— 用户评价
+
+没有自动评测，这张表就是**唯一**能知道「改得好不好」的线上信号。
+
+| 字段 | 类型 | 取值 / 默认 | 含义 |
+| --- | --- | --- | --- |
+| `id` | bigint | 自增主键 | |
+| `task_id` | varchar(40) | 索引 | 指向 `deai_rewrite_task.id`。**刻意不用外键**——避免任务清理时级联删掉宝贵的反馈 |
+| `openid` | varchar(64) | 索引 | 评价者 |
+| `rating` | varchar(8) | `good`(满意) / `bad`(不满意) | 评价 |
+| `reason` | varchar(32) | 可空；见下方枚举 | 仅 `bad` 时有意义，`good` 时会被清空 |
+| `comment` | longtext | 可空，≤1000 字 | 自由补充 |
+| `created_at` | datetime(6) | 自动写入 | |
+| `updated_at` | datetime(6) | 自动更新 | |
+
+`reason` 枚举（前端应从 `/api/feedback/summary` 的 `availableReasons` 读，别写死）：
+
+| 值 | 含义 |
+| --- | --- |
+| `added_facts` | 加了原文没有的内容 |
+| `lost_info` | 丢了原文的信息 |
+| `not_natural` | 还是很像 AI |
+| `changed_meaning` | 意思被改了 |
+| `too_casual` | 改得太随意 / 口语 |
+| `too_formal` | 改得太正式 |
+| `too_long` | 变啰嗦了 |
+| `too_short` | 变短了、信息变少 |
+| `other` | 其他（**未知标签也会收敛到这里**，而不是丢弃） |
+
+**唯一约束 `(task_id, openid)`**：同一用户对同一任务只保留一条记录，重复提交视为
+「改主意」并覆盖（`update_or_create`），不会堆出多条自相矛盾的记录。
+
+### 7.3 `deai_quota_usage` —— 每日额度
+
+规则层体检不计次，只有「AI 深度改写」才消耗额度。
+
+| 字段 | 类型 | 取值 / 默认 | 含义 |
+| --- | --- | --- | --- |
+| `id` | bigint | 自增主键 | |
+| `openid` | varchar(64) | | 用户 |
+| `day` | date | | 日期。容器时区为 `Asia/Shanghai`，所以是北京时间当天 |
+| `used` | int | 默认 0 | 当日已用次数，上限由 `DEAI_DAILY_LIMIT` 控制（默认 20） |
+
+**唯一约束 `(openid, day)`** + `F()` 原子自增，保证并发下不丢计数。
+计数用「先读后判」有极小竞争窗口（见「已知限制」），作为免费额度够用。
+
+> 这张表是**最不能丢**的：容器缩容重启后如果归零，配额限制就形同虚设。
+> 这也是必须用 MySQL 而不是容器内 SQLite 的主要原因。
+
+### 7.4 `Counters` —— 模板原有
+
+上游模板自带的计数器示例，保持可用、未改动行为。
+
+| 字段 | 类型 | 取值 / 默认 | 含义 |
+| --- | --- | --- | --- |
+| `id` | bigint | 自增主键 | |
+| `count` | int | 默认 0 | 计数值，`/api/count` 读写 |
+| `createdAt` | datetime(6) | `timezone.now` | 创建时间 |
+| `updatedAt` | datetime(6) | `timezone.now` | 更新时间 |
+
+---
+
+## 八、深度改写为什么是「混合模式」
 
 `wx.cloud.callContainer` 单次请求上限 **15 秒**，并且小程序**切到后台 5 秒后请求会被
 系统杀掉**（`fail interrupted`）。原设计因此走纯异步：立刻返回 `taskId`，前端轮询。
@@ -665,7 +779,7 @@ POST /api/rewrite
 
 ---
 
-## 八、已知限制
+## 九、已知限制
 
 - **容器重启会杀掉正在跑的改写线程**。任务状态已落库，超过
   `DEAI_TASK_TIMEOUT_SECONDS` 会判失败，用户重试即可。最小副本设为 0 时冷启动约几秒。
@@ -681,7 +795,7 @@ POST /api/rewrite
 
 ---
 
-## 九、上游模板
+## 十、上游模板
 
 - 微信云托管快速开始：<https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/basic/guide.html>
 - 本地调试指南：<https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/>
