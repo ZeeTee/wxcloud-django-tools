@@ -102,6 +102,7 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 │   └── tasks.py                后台线程池 + 超时判失败
 ├── scripts/
 │   ├── dev.sh                  本地一键起服务
+│   ├── init_db.py              建库 + 建表 + 校验（幂等）
 │   └── smoke_api.py            接口端到端冒烟（无需联网）
 └── tests/
     ├── test_engine.py          引擎单测（不需要 Django）
@@ -146,13 +147,60 @@ curl -s localhost:8080/api/count
 跑测试（**都不需要联网**）：
 
 ```bash
-python3 -m unittest discover -s tests -t .   # 引擎单测 43 项
-python3 scripts/smoke_api.py                 # 接口冒烟 33 项
+python3 -m unittest discover -s tests -t .   # 引擎与 skill 单测，111 项
+python3 scripts/smoke_api.py                 # 接口冒烟，58 项
 ```
 
 `smoke_api.py` 会故意把模型地址指向一个连不上的端口，从而把「建任务 → 后台线程 →
 轮询 → 失败兜底 → 配额扣减 → 鉴权」整条链路真实走一遍，同时回归模板原有的
 `/api/count` 与主页。
+
+### 数据库初始化
+
+`scripts/init_db.py` 把「建库 + 建表 + 校验」合成一条命令。**Django 的 `migrate`
+只建表不建库**——数据库不存在时连接阶段就失败了，所以这三步缺一不可：
+
+```bash
+python scripts/init_db.py                 # 建库 + 建表 + 校验
+python scripts/init_db.py --dry-run       # 只打印将要做的事
+python scripts/init_db.py --print-sql     # 只打印迁移 SQL（交给 DBA 审核 / 手工建表）
+python scripts/init_db.py --skip-db       # 跳过建库（库已存在或无 CREATE 权限）
+python scripts/init_db.py --check-only    # 只校验业务表是否齐全
+```
+
+幂等，可反复执行。本地没配 `MYSQL_ADDRESS` 时会走 SQLite：建库这步自动跳过，
+`migrate` 直接把 `.sqlite3` 文件建出来。
+
+> `--print-sql` 输出的 SQL 方言**取决于当前配置的数据库**：配了 MySQL 就是 MySQL 语法，
+> 否则是 SQLite 语法。要生成 MySQL 的建表语句，请带上 `MYSQL_ADDRESS` 运行。
+
+#### 两个实测踩到的坑
+
+**1. 字符集必须是 `utf8mb4`，不能是 `utf8`**
+
+腾讯云 CynosDB 开通时给的库默认是 `utf8`（即 utf8mb3，最多 3 字节）。
+实测 `SELECT CONVERT('😀' USING utf8)` → `'?'`：**emoji 会静默变成问号**，
+用户输入一个 emoji 就丢字符，而且不报错。
+
+`init_db.py` 会检测库的字符集，不对就自动 `ALTER DATABASE` 改成 utf8mb4；
+已有表可以用 `--fix-tables` 一起转换（注意 `ALTER TABLE` 会锁表，大表慎用）。
+
+**2. Django 4.2 不支持 MySQL 5.7**
+
+Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproject.com/ticket/33718#comment:3)），
+连上 5.7 会直接抛 `NotSupportedError: MySQL 8 or later is required`。
+而云托管/CynosDB 上仍可能是 5.7 实例。
+
+打开 `MYSQL_ALLOW_57=true` 可以绕过版本检查。本项目在 5.7.18 上实测通过：
+连接、中文与 emoji 往返、以及全部建表 DDL 都正常——模型只用了
+`varchar` / `longtext` / `integer` / `bigint` / `datetime(6)` / `numeric` / `date`
+这些基础类型，没有 8.0 专有语法。
+
+> ⚠️ 但这**仍是官方未支持的组合**：Django 不会为 5.7 做兼容测试，将来用到窗口函数、
+> 表达式默认值之类的特性时会踩坑。**建议尽快把实例升级到 MySQL 8**，而不是长期开着这个开关。
+
+容器启动时也会自动 `migrate`（见 Dockerfile 的 CMD），所以**线上通常不需要手动跑**这个脚本；
+它主要服务于本地连远程库、迁移到新实例、以及人工审核 SQL 这几种场景。
 
 ---
 
@@ -166,26 +214,34 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
    - 方式 A（推荐）：绑定本仓库，构建目录填 `.`。
    - 方式 B：把仓库打成 zip 上传。
    - **端口填 `80`**（必须与 Dockerfile 的 `EXPOSE 80` 一致，否则 `Readiness probe failed`）。
-4. **配环境变量**（服务设置 → 环境变量）—— 至少这三个：
+4. **配环境变量**（服务设置 → 环境变量）—— 最少这三个：
 
    | 变量 | 值 |
    | --- | --- |
-   | `LLM_API_KEY` | 你的模型密钥 |
-   | `LLM_BASE_URL` | 如 `https://api.deepseek.com/v1` |
-   | `LLM_MODEL` | 如 `deepseek-chat` |
+   | `DJANGO_SECRET_KEY` | 随机串，生成：`python3 -c "import secrets;print(secrets.token_urlsafe(50))"` |
+   | `LLM_PROVIDER` | `deepseek`（默认）或 `openrouter` |
+   | `DEEPSEEK_API_KEY` | 对应 provider 的密钥（选 openrouter 就填 `OPENROUTER_API_KEY`） |
 
-   再补一个随机密钥：`DJANGO_SECRET_KEY`
-   （`python3 -c "import secrets;print(secrets.token_urlsafe(50))"`）。
+   其余变量都有默认值，完整清单见第五节。
 
    > 环境变量在**构建阶段读不到**，只在运行时注入，所以不要在 Dockerfile 里读。
 
-   > 如果要用云托管内 MySQL：控制台开通后会自动注入 `MYSQL_ADDRESS` 等变量，
-   > 本项目无需额外配置。**多副本必须开 MySQL**，否则各副本任务状态不一致。
+5. **开数据库（强烈建议）**：控制台 → MySQL → 开通。
 
-5. **发布**：保存后发布版本，访问 `https://<域名>/api/health` 确认
+   开通后会自动注入 `MYSQL_ADDRESS` / `MYSQL_USERNAME` / `MYSQL_PASSWORD`，
+   本项目无需改代码，容器启动时会自动 `migrate` 建表。
+
+   **为什么建议开**：不开的话走容器内 SQLite，而 `minNum: 0` 会在 30 分钟无请求后
+   缩容到 0——容器一重启，**每日额度表就归零，配额限制形同虚设**；多副本时各副本
+   数据还互不可见，轮询会查不到任务。
+
+   想确认建表结果，可在容器内执行：`python scripts/init_db.py --check-only`
+   （该脚本也能手动建库建表，见第三节）。
+
+6. **发布**：保存后发布版本，访问 `https://<域名>/api/health` 确认
    `llmConfigured: true`。
 
-6. **小程序前端**：前端是**独立项目**，不在本仓库。在那边配置：
+7. **小程序前端**：前端是**独立项目**，不在本仓库。在那边配置：
 
    ```js
    module.exports = {
@@ -197,7 +253,7 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
    并把小程序后台的**基础库最低版本设为 ≥ 2.23.0**（否则 `callContainer` 不可用）。
    前端不需要配「服务器域名」——`callContainer` 免域名校验、免备案。
 
-7. **联调**：在开发者工具里跑一次「关于」页的配置自检，确认能打通。
+8. **联调**：在开发者工具里跑一次「关于」页的配置自检，确认能打通。
 
 > ⚠️ `container.config.json` 只在「控制台一键模板部署」那一次生效；自己新建服务 +
 > 传代码包时它会被忽略，端口/规格/环境变量都要在控制台手填。
@@ -229,6 +285,7 @@ python3 scripts/smoke_api.py                 # 接口冒烟 33 项
 | `DEAI_SYNC_WAIT_SECONDS` | `12` | 混合模式：同步等待多久，超时才转轮询；`0` 为纯异步 |
 | `DEAI_ALLOW_ANONYMOUS` | =`DEBUG` | **生产必须 `false`**，否则公网可白嫖 |
 | `MYSQL_ADDRESS` | 空 | 配了用 MySQL，不配用 SQLite |
+| `MYSQL_ALLOW_57` | `false` | 允许连 MySQL 5.7（见下方说明，**建议升级而非长期开启**） |
 | `MYSQL_DATABASE` | `django_demo` | |
 | `MYSQL_USERNAME` / `MYSQL_USER` | `root` | 两种命名都支持 |
 | `MYSQL_PASSWORD` | 空 | |
@@ -578,7 +635,121 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 
 ---
 
-## 七、深度改写为什么是「混合模式」
+## 七、数据库表结构
+
+四张业务表（另有 Django 自带的 `django_*` / `auth_*` 表，随 `migrate` 一起建，不用管）。
+
+| 表 | 用途 | 关键约束 |
+| --- | --- | --- |
+| `deai_rewrite_task` | 改写任务：状态、结果、用量、费用 | 主键 `id`；索引 `(openid, created_at)` |
+| `deai_feedback` | 用户对改写结果的评价 | 唯一 `(task_id, openid)` |
+| `deai_quota_usage` | 每日免费额度计数 | 唯一 `(openid, day)` |
+| `Counters` | 模板原有的计数器示例 | 主键 `id` |
+
+> **字符集必须是 `utf8mb4`**，否则 emoji 会静默变成 `?`（见第三节的踩坑记录）。
+> **表名大小写**：`lower_case_table_names=1`（Linux 默认）时 `Counters` 实际存为 `counters`，
+> Django 查询不受影响，但手写 SQL 时要注意。下面统一用模型里的逻辑名。
+
+---
+
+### 7.1 `deai_rewrite_task` —— 改写任务
+
+一次「AI 深度改写」就是一行。任务必须落库：`callContainer` 上限 15 秒，而模型要跑
+1-3 秒甚至更久，且轮询请求可能落到不同副本，状态不能只放进程内存。
+
+| 字段 | 类型 | 取值 / 默认 | 含义 |
+| --- | --- | --- | --- |
+| `id` | varchar(40) | 主键，`uuid4().hex` | 任务 ID，轮询时用它 |
+| `openid` | varchar(64) | 索引 | 调用者微信 openid；本地匿名调用为 `anonymous` |
+| `status` | varchar(16) | `pending`(默认) / `running` / `done` / `failed` | 任务状态。**轮询接口靠它分支** |
+| `mode` | varchar(16) | `general`(默认) / `xhs` / `academic` / `official` | 场景，决定 skill 的场景覆盖 |
+| `intensity` | varchar(16) | `light` / `medium`(默认) / `heavy` | 改写力度 |
+| `skill` | varchar(32) | `humanizer`(默认) / `legacy` | **实际生效**的 skill。编译失败回退时这里会与请求值不同——正是排查线索 |
+| `skill_version` | varchar(16) | 可空 | skill 版本号（`skill.json` 里**手写**，可能忘记 bump） |
+| `prompt_fingerprint` | varchar(16) | 可空 | 编译后 prompt 的 sha256 前 12 位，**不会说谎**，用于精确定位版本 |
+| `source_text` | longtext | | 用户原始输入（≤ `DEAI_MAX_INPUT_CHARS`） |
+| `rules_text` | longtext | 可空 | 规则层改写结果。**模型失败时这就是兜底内容** |
+| `llm_text` | longtext | 可空 | 大模型改写结果（`<REWRITTEN>` 内容） |
+| `llm_report` | longtext | 可空 | 模型自评报告（`<REPORT>` 内容），legacy 模式为空 |
+| `protocol_ok` | bool | 默认 `true` | 模型是否守住输出协议；`false` 表示走了容错解析——变多说明 prompt 要调 |
+| `llm_added_facts` | longtext | 可空 | 模型**自报**补充了哪些原文没有的内容，供用户核对 |
+| `prompt_tokens` | int | 默认 0 | 输入 token |
+| `completion_tokens` | int | 默认 0 | 输出 token |
+| `cache_hit_tokens` | int | 默认 0 | 命中 prompt 缓存的 token。**成本关键**：命中价与未命中价差 50 倍，实测直连 DeepSeek 时命中率约 96% |
+| `cost_cny` | numeric(12,6) | 默认 0 | 本次费用（元）。供应商上报的美元成本折算，或按本地价格表估算 |
+| `error` | longtext | 可空 | 失败原因（人话，直接给用户看） |
+| `model_name` | varchar(64) | 可空 | 模型实际返回的模型名（可能与你请求的不同，如 `deepseek-chat` → `deepseek-flash`） |
+| `provider` | varchar(16) | 可空 | 实际用的供应商：`deepseek` / `openrouter` |
+| `warnings` | longtext | 可空 | 保真校验提示，**JSON 数组字符串**（不是关联表） |
+| `elapsed_ms` | int | 默认 0 | 模型调用耗时（毫秒），不含排队 |
+| `created_at` | datetime(6) | 自动写入 | 创建时间，索引字段 |
+| `updated_at` | datetime(6) | 自动更新 | 最后更新时间 |
+
+索引 `deai_task_openid_created_idx (openid, created_at)` 是为「查我的历史任务」建的。
+
+### 7.2 `deai_feedback` —— 用户评价
+
+没有自动评测，这张表就是**唯一**能知道「改得好不好」的线上信号。
+
+| 字段 | 类型 | 取值 / 默认 | 含义 |
+| --- | --- | --- | --- |
+| `id` | bigint | 自增主键 | |
+| `task_id` | varchar(40) | 索引 | 指向 `deai_rewrite_task.id`。**刻意不用外键**——避免任务清理时级联删掉宝贵的反馈 |
+| `openid` | varchar(64) | 索引 | 评价者 |
+| `rating` | varchar(8) | `good`(满意) / `bad`(不满意) | 评价 |
+| `reason` | varchar(32) | 可空；见下方枚举 | 仅 `bad` 时有意义，`good` 时会被清空 |
+| `comment` | longtext | 可空，≤1000 字 | 自由补充 |
+| `created_at` | datetime(6) | 自动写入 | |
+| `updated_at` | datetime(6) | 自动更新 | |
+
+`reason` 枚举（前端应从 `/api/feedback/summary` 的 `availableReasons` 读，别写死）：
+
+| 值 | 含义 |
+| --- | --- |
+| `added_facts` | 加了原文没有的内容 |
+| `lost_info` | 丢了原文的信息 |
+| `not_natural` | 还是很像 AI |
+| `changed_meaning` | 意思被改了 |
+| `too_casual` | 改得太随意 / 口语 |
+| `too_formal` | 改得太正式 |
+| `too_long` | 变啰嗦了 |
+| `too_short` | 变短了、信息变少 |
+| `other` | 其他（**未知标签也会收敛到这里**，而不是丢弃） |
+
+**唯一约束 `(task_id, openid)`**：同一用户对同一任务只保留一条记录，重复提交视为
+「改主意」并覆盖（`update_or_create`），不会堆出多条自相矛盾的记录。
+
+### 7.3 `deai_quota_usage` —— 每日额度
+
+规则层体检不计次，只有「AI 深度改写」才消耗额度。
+
+| 字段 | 类型 | 取值 / 默认 | 含义 |
+| --- | --- | --- | --- |
+| `id` | bigint | 自增主键 | |
+| `openid` | varchar(64) | | 用户 |
+| `day` | date | | 日期。容器时区为 `Asia/Shanghai`，所以是北京时间当天 |
+| `used` | int | 默认 0 | 当日已用次数，上限由 `DEAI_DAILY_LIMIT` 控制（默认 20） |
+
+**唯一约束 `(openid, day)`** + `F()` 原子自增，保证并发下不丢计数。
+计数用「先读后判」有极小竞争窗口（见「已知限制」），作为免费额度够用。
+
+> 这张表是**最不能丢**的：容器缩容重启后如果归零，配额限制就形同虚设。
+> 这也是必须用 MySQL 而不是容器内 SQLite 的主要原因。
+
+### 7.4 `Counters` —— 模板原有
+
+上游模板自带的计数器示例，保持可用、未改动行为。
+
+| 字段 | 类型 | 取值 / 默认 | 含义 |
+| --- | --- | --- | --- |
+| `id` | bigint | 自增主键 | |
+| `count` | int | 默认 0 | 计数值，`/api/count` 读写 |
+| `createdAt` | datetime(6) | `timezone.now` | 创建时间 |
+| `updatedAt` | datetime(6) | `timezone.now` | 更新时间 |
+
+---
+
+## 八、深度改写为什么是「混合模式」
 
 `wx.cloud.callContainer` 单次请求上限 **15 秒**，并且小程序**切到后台 5 秒后请求会被
 系统杀掉**（`fail interrupted`）。原设计因此走纯异步：立刻返回 `taskId`，前端轮询。
@@ -608,7 +779,7 @@ POST /api/rewrite
 
 ---
 
-## 八、已知限制
+## 九、已知限制
 
 - **容器重启会杀掉正在跑的改写线程**。任务状态已落库，超过
   `DEAI_TASK_TIMEOUT_SECONDS` 会判失败，用户重试即可。最小副本设为 0 时冷启动约几秒。
@@ -624,7 +795,7 @@ POST /api/rewrite
 
 ---
 
-## 九、上游模板
+## 十、上游模板
 
 - 微信云托管快速开始：<https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/basic/guide.html>
 - 本地调试指南：<https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/>
