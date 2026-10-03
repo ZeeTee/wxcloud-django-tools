@@ -37,9 +37,9 @@ RUN python -c "from deai.skills import get_registry; r = get_registry(); c = r.c
 # 端口必须与控制台「服务设置 / 发布时」填写的端口完全一致，否则 Readiness probe failed
 EXPOSE 80
 
-# 单行 CMD：写多行独立 CMD 只有最后一行会执行（官方 FAQ 明确列为常见错误）。
-# --fake-initial：模板部署路径下 Counters 表已由 container.config.json 的
-#   executeSQLs 建好，Django 需要识别并跳过，否则会报「表已存在」导致启动失败。
-# --timeout 55 < 平台 60s 上限；真正的长任务（大模型改写）在后台线程里跑，
-#   由 /api/task/<id> 轮询取结果，所以不会撞上这个超时。
-CMD ["sh", "-c", "python manage.py migrate --noinput --fake-initial && gunicorn wxcloudrun.wsgi:application -b 0.0.0.0:80 -w 2 -k gthread --threads 4 --timeout 55 --graceful-timeout 30 --keep-alive 5 --access-logfile - --error-logfile -"]
+# 启动脚本负责：打印环境变量 → 跑 migrate → 起 gunicorn。
+# 为什么不在 CMD 里直接堆命令：migrate 一失败 gunicorn 就不启动，80 端口没人监听，
+# 云托管只会报 "probe failed: connection refused"，**真实原因完全看不到**。
+# start.sh 会把 migrate 的原始报错和常见原因对照一起打出来。
+# 端口必须与控制台「服务设置」填写的端口一致（这里是 80）。
+CMD ["sh", "start.sh"]
