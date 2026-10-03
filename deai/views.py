@@ -20,7 +20,8 @@ from django.http import JsonResponse
 
 from . import quota as quota_service
 from . import tasks
-from .auth import AuthError, get_identity
+from . import wechat
+from .auth import ANONYMOUS, AuthError, get_identity
 from .engine import build_report, is_configured, rewrite_by_rules
 from django.db.models import Count, Sum
 from django.utils import timezone
@@ -399,11 +400,61 @@ def task_status(request, task_id: str):
 
 @api("GET")
 def quota(request):
-    """查询今日剩余额度。"""
+    """查询今日剩余额度。
+
+    返回里带 ``verified`` / ``anonymousLimit`` / ``verifiedLimit``，
+    前端据此显示「登录后每天可用 N 次」的引导。
+    """
     identity, err = _identity_or_error(request)
     if err:
         return err
     return ok(quota_service.get_quota(identity))
+
+
+@api("POST")
+def login(request):
+    """用 ``wx.login()`` 的 code 完成登录，把额度从匿名档提升到已登录档。
+
+    **安全要点**：code2Session 换回来的 openid 必须与请求头里的
+    ``X-WX-OPENID`` 一致。不一致就拒绝——否则任何人拿别人的 code 来调这个接口，
+    都能把自己的额度翻倍，「登录提额度」就成了无门槛的福利。
+    """
+    identity, err = _identity_or_error(request)
+    if err:
+        return err
+    data, err = _parse_body(request)
+    if err:
+        return err
+
+    code = str(data.get("code") or "").strip()
+    if not code:
+        return fail("CODE_EMPTY", "缺少登录凭证 code", 400)
+
+    if not wechat.is_configured():
+        return fail("WX_NOT_CONFIGURED", "服务端还没配置微信 AppID / AppSecret", 503)
+
+    try:
+        session = wechat.code2session(code)
+    except wechat.WeChatError as exc:
+        return fail("WX_LOGIN_FAILED", str(exc), 400)
+
+    openid = session["openid"]
+    if identity == ANONYMOUS:
+        # 本地开发没有云托管注入的身份头，只能拿 code2Session 的结果当身份。
+        # 注意：后续请求的 identity 仍是 "anonymous"，所以本地看不到额度提升——
+        # 这是开发模式的固有限制，生产环境不存在。
+        logger.warning("匿名模式下登录，用 code2Session 的 openid 标记：%s", openid)
+    elif openid != identity:
+        logger.warning(
+            "登录 openid 不匹配：header=%s code2session=%s", identity, openid
+        )
+        return fail("OPENID_MISMATCH", "登录信息与当前用户不一致，请重新登录", 400)
+    else:
+        openid = identity
+
+    quota_service.mark_verified(openid, session.get("session_key") or "")
+    logger.info("用户 %s 登录成功，额度提升到已登录档", openid)
+    return ok({"verified": True, "quota": quota_service.get_quota(openid)})
 
 
 @api("POST")

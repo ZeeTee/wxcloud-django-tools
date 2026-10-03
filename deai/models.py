@@ -115,6 +115,36 @@ class Feedback(models.Model):
         return f"<Feedback {self.task_id} {self.rating}>"
 
 
+class UserProfile(models.Model):
+    """用户状态：记录「用户是否主动登录过」。
+
+    为什么需要它：``X-WX-OPENID`` 是云托管自动注入的，**未登录也能拿到**，
+    所以它天然就能唯一区分用户（匿名额度靠它计数，清缓存也重置不了）。
+    但这也意味着「未登录」和「已登录」在身份上没有区别——
+    要区分两档额度，就得有一个**用户主动做过的、可验证的动作**。
+
+    这里用的是微信官方登录：前端 ``wx.login()`` 拿 code，后端 ``code2Session``
+    换取 openid。验证通过就记下 ``verified_at``，额度从 5 次提到 10 次。
+
+    openid 直接做主键：一个用户一行，天然去重。
+    """
+
+    openid = models.CharField(max_length=64, primary_key=True)
+    # code2Session 会返回 session_key，当前用不到，但存下来以后要用
+    # （比如解密手机号、校验用户信息）不必再让用户登一次
+    session_key = models.CharField(max_length=64, blank=True, default="")
+    # 最近一次成功登录的时间。为空 = 从未登录 = 走匿名额度
+    verified_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "deai_user_profile"
+
+    def __str__(self) -> str:  # pragma: no cover - 仅调试用
+        return f"<UserProfile {self.openid} verified={self.verified_at is not None}>"
+
+
 class QuotaUsage(models.Model):
     """按天统计的免费额度。规则层不计次，只有 AI 深度改写才消耗。"""
 

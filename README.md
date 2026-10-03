@@ -279,7 +279,10 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `DJANGO_DEBUG` | `false` | |
 | `DJANGO_ALLOWED_HOSTS` | `*` | 云托管 Host 不固定，默认放开 |
 | `DEAI_MAX_INPUT_CHARS` | `5000` | 单次输入上限 |
-| `DEAI_DAILY_LIMIT` | `20` | 每人每天的 AI 改写次数（规则层不限） |
+| `DEAI_DAILY_LIMIT_ANONYMOUS` | `5` | 未登录用户每天的 AI 改写次数 |
+| `DEAI_DAILY_LIMIT_VERIFIED` | `10` | 登录用户每天的 AI 改写次数 |
+| `DEAI_DAILY_LIMIT` | `0` | 旧变量：>0 时两档都用它（兼容老部署） |
+| `WX_APPID` / `WX_SECRET` | 空 | 小程序登录用；不配则 `/api/auth/login` 返回 503 |
 | `DEAI_TASK_TIMEOUT_SECONDS` | `120` | 超时仍无结果的任务判为失败 |
 | `DEAI_WORKERS` | `4` | 后台改写线程数 |
 | `DEAI_SYNC_WAIT_SECONDS` | `12` | 混合模式：同步等待多久，超时才转轮询；`0` 为纯异步 |
@@ -316,6 +319,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | 7 | GET | `/api/task/<taskId>` | 取改写结果（轮询或补查） | 路径 `taskId` | 否 |
 | 8 | POST | `/api/feedback` | 对某次改写结果评价 | body `taskId` `rating` `reason` `comment` | 否 |
 | 9 | GET | `/api/feedback/summary` | 当前用户的评价统计 | 无 | 否 |
+| 10 | POST | `/api/auth/login` | 用 `wx.login()` 的 code 登录，额度从 5 次提升到 10 次 | body `code` | 否 |
 | 10 | GET/POST | `/api/count` | 模板原有的计数器示例（保持原格式，未改动） | POST body `action` | 否 |
 | 11 | GET | `/` | 模板原有的欢迎页 | 无 | 否 |
 
@@ -418,7 +422,44 @@ other         其他
 
 ---
 
-### 公共结构
+#### POST /api/auth/login —— 登录并提升额度
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `code` | string | ✅ | `wx.login()` 返回的 code |
+
+返回 `{verified: true, quota: {...}}`。可能的错误码：`CODE_EMPTY`（400）、
+`WX_NOT_CONFIGURED`（503，服务端没配 AppID/AppSecret）、`WX_LOGIN_FAILED`（400，
+code 无效或已用过）、`OPENID_MISMATCH`（400，见下方安全说明）。
+
+> **安全要点**：后端会校验 `code2Session` 返回的 openid 与请求头里的
+> `X-WX-OPENID` **是否一致**，不一致直接拒绝。否则任何人拿别人的 code 来调这个接口
+> 都能把自己的额度翻倍，「登录提额度」就成了无门槛福利。
+
+### 用户身份与额度
+
+| 状态 | 身份来源 | 每日额度 | 用户要做什么 |
+| --- | --- | --- | --- |
+| 未登录 | `X-WX-OPENID`（云托管自动注入） | **5 次** | **什么都不用做** |
+| 已登录 | 同一个 openid | **10 次** | 点「登录」→ `wx.login()` → `/api/auth/login` |
+
+**一个容易误解的点**：微信小程序里 `openid` 是**静默获取**的，不需要任何授权弹窗，
+云托管会自动把它注入到 `X-WX-OPENID` 请求头。所以**「不登录也能唯一区分用户」这件事
+现在就已经做到了**，不需要额外方案。
+
+反过来，这也意味着「未登录」和「已登录」**在身份上没有区别**——要区分两档额度，
+必须有一个用户主动做过的、可验证的动作。这里用的就是微信官方登录
+（`wx.login()` → `code2Session` 换 openid）。
+
+**为什么匿名额度也记在后端**：有人会想「未登录就用前端本地存储计数」。但那样用户
+**清一次小程序缓存次数就归零**，等于没有限制，而且前端数据可被篡改。用 openid 记在
+后端，清缓存重置不了（要换微信号才行），代价只是一次数据库查询。
+
+`/api/quota` 返回 `verified`、`anonymousLimit`、`verifiedLimit`，前端据此显示
+「登录后每天可用 10 次」的引导。未登录额度用尽时，`QUOTA_EXCEEDED` 的错误文案里
+也会带上这个引导。
+
+
 
 **`report`（体检报告）**
 
@@ -471,6 +512,10 @@ other         其他
 | `BAD_JSON` / `BAD_ENCODING` | 400 | 请求体不是合法 JSON / UTF-8 |
 | `METHOD_NOT_ALLOWED` | 405 | 请求方法不对（返回的仍是 JSON 信封） |
 | `SKILL_NOT_FOUND` | 400 | 传了不存在的 skill（刻意不兜底） |
+| `CODE_EMPTY` | 400 | 登录时没传 code |
+| `WX_NOT_CONFIGURED` | 503 | 服务端没配微信 AppID / AppSecret |
+| `WX_LOGIN_FAILED` | 400 | 微信登录失败（code 无效、已用过、被风控等） |
+| `OPENID_MISMATCH` | 400 | 登录换回的 openid 与当前请求身份不一致 |
 | `BAD_RATING` | 400 | `rating` 不是 `good`/`bad` |
 | `UNAUTHORIZED` | 401 | 拿不到调用方身份 |
 | `FORBIDDEN` | 403 | 访问他人的任务 |
@@ -644,6 +689,7 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 | `deai_rewrite_task` | 改写任务：状态、结果、用量、费用 | 主键 `id`；索引 `(openid, created_at)` |
 | `deai_feedback` | 用户对改写结果的评价 | 唯一 `(task_id, openid)` |
 | `deai_quota_usage` | 每日免费额度计数 | 唯一 `(openid, day)` |
+| `deai_user_profile` | 用户登录状态（决定走哪档额度） | 主键 `openid` |
 | `Counters` | 模板原有的计数器示例 | 主键 `id` |
 
 > **字符集必须是 `utf8mb4`**，否则 emoji 会静默变成 `?`（见第三节的踩坑记录）。
@@ -736,7 +782,22 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 > 这张表是**最不能丢**的：容器缩容重启后如果归零，配额限制就形同虚设。
 > 这也是必须用 MySQL 而不是容器内 SQLite 的主要原因。
 
-### 7.4 `Counters` —— 模板原有
+### 7.4 `deai_user_profile` —— 用户登录状态
+
+决定该用户走匿名档（5 次）还是已登录档（10 次）。openid 直接做主键，一个用户一行。
+
+| 字段 | 类型 | 取值 / 默认 | 含义 |
+| --- | --- | --- | --- |
+| `openid` | varchar(64) | **主键** | 用户标识。与 `X-WX-OPENID` 同源 |
+| `session_key` | varchar(64) | 可空 | `code2Session` 返回的会话密钥。当前用不到，存下来是为了以后解密手机号等不必再让用户登一次 |
+| `verified_at` | datetime(6) | 可空，索引 | 最近一次成功登录的时间。**为空 = 从未登录 = 走匿名额度** |
+| `created_at` | datetime(6) | 自动写入 | |
+| `updated_at` | datetime(6) | 自动更新 | |
+
+> 注意 `QuotaUsage` 里**不区分**匿名与登录——额度计数只有一份，档位由这张表决定。
+> 这样用户登录后已用的次数不会清零（否则「先匿名用完 5 次再登录拿 10 次」会变成 15 次）。
+
+### 7.5 `Counters` —— 模板原有
 
 上游模板自带的计数器示例，保持可用、未改动行为。
 

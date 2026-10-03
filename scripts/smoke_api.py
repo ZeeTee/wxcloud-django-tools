@@ -167,6 +167,26 @@ print("\n=== 4. 额度 ===")
 r = client.get("/api/quota", **AUTH)
 q = r.json()["data"]
 check("初始额度 used=0 limit=2", q["used"] == 0 and q["limit"] == 2 and q["remaining"] == 2, q)
+check(
+    "返回双档信息（verified / anonymousLimit / verifiedLimit）",
+    {"verified", "anonymousLimit", "verifiedLimit"} <= set(q),
+    q,
+)
+check("未登录时 verified=false", q.get("verified") is False, q)
+
+print("\n=== 4.5 登录（提升额度）===")
+r = post_json("/api/auth/login", {}, **AUTH)
+check(
+    "缺 code -> 400 CODE_EMPTY",
+    r.status_code == 400 and r.json()["error"]["code"] == "CODE_EMPTY",
+    r.json(),
+)
+r = post_json("/api/auth/login", {"code": "fake-code"}, **AUTH)
+check(
+    "未配置 AppID/AppSecret -> 503 WX_NOT_CONFIGURED",
+    r.status_code == 503 and r.json()["error"]["code"] == "WX_NOT_CONFIGURED",
+    r.json(),
+)
 
 print("\n=== 5. 异步改写链路（模型连不上，验证失败兜底）===")
 r = post_json("/api/rewrite", {"text": AI_TEXT, "mode": "general"}, **AUTH)
@@ -258,10 +278,28 @@ check(
 )
 
 print("\n=== 7. 额度耗尽 ===")
-r = post_json("/api/rewrite", {"text": AI_TEXT}, **AUTH)
-check("第 2 次改写成功（used=2）", r.status_code == 200 and r.json()["data"]["quota"]["used"] == 2, r.json().get("data", {}).get("quota"))
-r = post_json("/api/rewrite", {"text": AI_TEXT}, **AUTH)
-check("第 3 次 -> 429 QUOTA_EXCEEDED", r.status_code == 429 and r.json()["error"]["code"] == "QUOTA_EXCEEDED", r.json())
+# 注意：额度按「北京时间当天」重置。如果测试恰好跨过午夜（真的遇到过：
+# 第 5 部分在 23:59 消耗、第 7 部分在 00:00 检查，计数已归零），
+# 「第 N 次一定失败」这种断言就会假失败。所以改成一直调到触顶为止。
+hit_limit = False
+for attempt in range(1, 6):
+    r = post_json("/api/rewrite", {"text": AI_TEXT}, **AUTH)
+    if r.status_code == 429:
+        body = r.json()
+        check(
+            f"第 {attempt} 次触顶 -> 429 QUOTA_EXCEEDED",
+            body.get("error", {}).get("code") == "QUOTA_EXCEEDED",
+            body,
+        )
+        check(
+            "额度耗尽的错误文案里带登录引导",
+            "登录" in body.get("error", {}).get("message", ""),
+            body.get("error", {}).get("message"),
+        )
+        hit_limit = True
+        break
+    check(f"第 {attempt} 次仍可用（返回 200）", r.status_code == 200, r.status_code)
+check("额度最终会被耗尽（对跨天鲁棒）", hit_limit, "调了 5 次仍未触顶")
 
 print("\n=== 8. 身份校验（关闭匿名）===")
 from django.conf import settings as dj_settings  # noqa: E402

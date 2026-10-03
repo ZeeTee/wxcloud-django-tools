@@ -168,8 +168,20 @@ LOGS_DIR = "/data/logs/"
 
 # 单次输入上限（字）
 DEAI_MAX_INPUT_CHARS = env_int("DEAI_MAX_INPUT_CHARS", 5000)
-# 每个用户每天可用的「AI 深度改写」次数；规则层体检/改写不限次
-DEAI_DAILY_LIMIT = env_int("DEAI_DAILY_LIMIT", 20)
+# 每个用户每天可用的「AI 深度改写」次数，分两档：
+# 未登录（匿名）与已登录。规则层体检/改写不限次、不消耗额度。
+# 注意：匿名身份用的是云托管自动注入的 X-WX-OPENID，不是前端本地存储——
+# 存本地的话用户清一次缓存就重置了，等于没有限制。
+DEAI_DAILY_LIMIT_ANONYMOUS = env_int("DEAI_DAILY_LIMIT_ANONYMOUS", 5)
+DEAI_DAILY_LIMIT_VERIFIED = env_int("DEAI_DAILY_LIMIT_VERIFIED", 10)
+# 旧变量，仅作为两个新变量的兜底（老部署只配了它时仍能跑）
+DEAI_DAILY_LIMIT = env_int("DEAI_DAILY_LIMIT", 0)
+
+# --- 微信小程序登录（wx.login -> code2Session）-------------------------------
+# 用于「点击登录后提升额度」。两个都必须配，否则 /api/auth/login 返回 503。
+WX_APPID = (os.environ.get("WX_APPID") or "").strip()
+WX_SECRET = (os.environ.get("WX_SECRET") or "").strip()
+WX_LOGIN_TIMEOUT = env_int("WX_LOGIN_TIMEOUT", 10)
 # 超过这个秒数还停在 pending/running 的任务判为失败（容器重启/扩缩容会杀后台线程）
 DEAI_TASK_TIMEOUT_SECONDS = env_int("DEAI_TASK_TIMEOUT_SECONDS", 120)
 # 是否允许没有 openid 的调用（本地开发用；生产必须保持 False）
