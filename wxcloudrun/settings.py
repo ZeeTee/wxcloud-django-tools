@@ -177,11 +177,30 @@ DEAI_DAILY_LIMIT_VERIFIED = env_int("DEAI_DAILY_LIMIT_VERIFIED", 10)
 # 旧变量，仅作为两个新变量的兜底（老部署只配了它时仍能跑）
 DEAI_DAILY_LIMIT = env_int("DEAI_DAILY_LIMIT", 0)
 
-# --- 微信小程序登录（wx.login -> code2Session）-------------------------------
-# 用于「点击登录后提升额度」。两个都必须配，否则 /api/auth/login 返回 503。
+# --- 微信小程序身份验证（手机号授权 -> getPhoneNumber）----------------------
+# 用于「授权手机号后提升额度」。两种调用方式，见 deai/wechat.py 的模块说明：
+#
+#   1. 云调用（默认，推荐）：容器内用 HTTP 直接请求 api.weixin.qq.com，不带
+#      access_token，由旁加载的「开放接口服务」自动注入 cloudbase_access_token。
+#      需要控制台-云调用打开开关、把路径加进白名单，**并在打开开关后重新构建版本**。
+#      这种模式下连 AppSecret 都不需要。
+#   2. 自管 access_token（兜底）：WX_OPENAPI_ENABLED=False 时启用，
+#      用 AppID + AppSecret 换 token，token 存在数据库里给多副本共享。
+#
+# WX_APPID 无论哪种模式都建议配上：手机号回包里有 watermark.appid，
+# 配上才能校验「这个手机号确实属于本小程序」。不配则跳过校验（会打 warning）。
 WX_APPID = (os.environ.get("WX_APPID") or "").strip()
+# 仅「自管 access_token」和旧的 code2Session 需要
 WX_SECRET = (os.environ.get("WX_SECRET") or "").strip()
 WX_LOGIN_TIMEOUT = env_int("WX_LOGIN_TIMEOUT", 10)
+# 是否启用「开放接口服务」（云调用）。默认开，因为本项目就跑在云托管上。
+WX_OPENAPI_ENABLED = env_bool("WX_OPENAPI_ENABLED", True)
+# 云调用必须走 HTTP：容器内 api.weixin.qq.com 会解析到 Docker 内部地址，
+# 由开放接口服务中转。走 HTTPS 需要额外信任 /app/cert/certificate.crt，
+# 官方也明确建议用 HTTP 以获得更好性能。
+WX_OPENAPI_BASE = (
+    os.environ.get("WX_OPENAPI_BASE") or "http://api.weixin.qq.com"
+).rstrip("/")
 # 超过这个秒数还停在 pending/running 的任务判为失败（容器重启/扩缩容会杀后台线程）
 DEAI_TASK_TIMEOUT_SECONDS = env_int("DEAI_TASK_TIMEOUT_SECONDS", 120)
 # 是否允许没有 openid 的调用（本地开发用；生产必须保持 False）

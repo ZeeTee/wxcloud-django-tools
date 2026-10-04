@@ -72,6 +72,17 @@ body = r.json()
 check("health 信封正确", body.get("ok") is True and "llmConfigured" in body.get("data", {}), body)
 check("health 识别到已配置密钥", body["data"]["llmConfigured"] is True, body)
 check("health 暴露了已加载的 skill", "humanizer" in body["data"].get("skills", []), body["data"].get("skills"))
+hd = body["data"]
+check(
+    "health 报告手机号授权就绪（默认云调用模式）",
+    hd.get("phoneAuthReady") is True and hd.get("phoneAuthMode") == "cloudcall",
+    {k: hd.get(k) for k in ("phoneAuthReady", "phoneAuthMode")},
+)
+check(
+    "health 报告生效的两档额度（含 DEAI_DAILY_LIMIT 兜底）",
+    hd.get("quotaLimits") == {"anonymous": 2, "verified": 2},
+    hd.get("quotaLimits"),
+)
 
 print("\n=== 1.1 Skill 列表 ===")
 r = client.get("/api/skills", **AUTH)
@@ -174,16 +185,68 @@ check(
 )
 check("未登录时 verified=false", q.get("verified") is False, q)
 
-print("\n=== 4.5 登录（提升额度）===")
-r = post_json("/api/auth/login", {}, **AUTH)
+print("\n=== 4.5 手机号授权（提升额度）===")
+# 用独立的 openid，避免影响第 7 节「未授权额度耗尽」的断言
+PHONE_AUTH = {"HTTP_X_WX_OPENID": "smoke-phone-openid"}
+r = post_json("/api/auth/login", {}, **PHONE_AUTH)
 check(
-    "缺 code -> 400 CODE_EMPTY",
+    "缺 phoneCode -> 400 CODE_EMPTY",
     r.status_code == 400 and r.json()["error"]["code"] == "CODE_EMPTY",
     r.json(),
 )
-r = post_json("/api/auth/login", {"code": "fake-code"}, **AUTH)
+
+# 冒烟脚本不联网，把微信接口换成本地桩。真实链路（云调用 HTTP 报文、
+# watermark 校验、错误码翻译）在 tests/test_phone_auth.py 里覆盖。
+from unittest.mock import patch  # noqa: E402
+
+import deai.wechat as wechat_mod  # noqa: E402
+
+FAKE_PHONE = {
+    "phone": "+86 13800138000",
+    "pure_phone": "13800138000",
+    "country_code": "86",
+    "masked": "138****8000",
+    "fingerprint": "0123456789abcdef0123456789abcdef",
+}
+with patch.object(wechat_mod, "get_phone_number", return_value=FAKE_PHONE) as phone_mock:
+    r = post_json("/api/auth/login", {"phoneCode": "fake-phone-code"}, **PHONE_AUTH)
+check("手机号授权 -> 200", r.status_code == 200, r.json())
+d = r.json().get("data", {})
+check("返回 verified=true", d.get("verified") is True, d)
+check("返回打码手机号（不返回完整号码）", d.get("phoneMasked") == "138****8000", d)
 check(
-    "未配置 AppID/AppSecret -> 503 WX_NOT_CONFIGURED",
+    "响应里没有完整手机号",
+    "13800138000" not in r.content.decode("utf-8"),
+    r.content.decode("utf-8"),
+)
+check("授权时把 phoneCode 透传给微信", phone_mock.call_args.args[0] == "fake-phone-code", phone_mock.call_args)
+check("quota 里档位已切换", d.get("quota", {}).get("verified") is True, d.get("quota"))
+
+r = client.get("/api/quota", **PHONE_AUTH)
+qd = r.json().get("data", {})
+check("再查额度仍是已授权", qd.get("verified") is True, qd)
+check("quota 带回打码手机号", qd.get("phoneMasked") == "138****8000", qd)
+
+with patch.object(
+    wechat_mod,
+    "get_phone_number",
+    side_effect=wechat_mod.WeChatError("这个手机号不属于当前小程序，已拒绝"),
+):
+    r = post_json("/api/auth/login", {"phoneCode": "stolen"}, **PHONE_AUTH)
+check(
+    "微信侧校验失败 -> 400 WX_PHONE_FAILED",
+    r.status_code == 400 and r.json()["error"]["code"] == "WX_PHONE_FAILED",
+    r.json(),
+)
+check(
+    "失败文案是人话",
+    "不属于当前小程序" in r.json()["error"]["message"],
+    r.json()["error"]["message"],
+)
+
+r = post_json("/api/auth/login", {"code": "fake-code"}, **PHONE_AUTH)
+check(
+    "旧 code2Session 路径仍兼容：未配密钥 -> 503",
     r.status_code == 503 and r.json()["error"]["code"] == "WX_NOT_CONFIGURED",
     r.json(),
 )
@@ -292,8 +355,8 @@ for attempt in range(1, 6):
             body,
         )
         check(
-            "额度耗尽的错误文案里带登录引导",
-            "登录" in body.get("error", {}).get("message", ""),
+            "额度耗尽的错误文案里带授权引导",
+            "授权手机号" in body.get("error", {}).get("message", ""),
             body.get("error", {}).get("message"),
         )
         hit_limit = True
