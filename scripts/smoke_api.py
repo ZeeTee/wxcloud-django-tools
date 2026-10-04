@@ -286,6 +286,11 @@ while status not in ("done", "failed") and time.monotonic() < deadline:
     time.sleep(0.5)
 check("最终进入终态（而不是永远 pending）", status in ("done", "failed"), status)
 check("终态下仍可拿到 rulesText 兜底", bool(payload.get("rulesText")), payload.keys())
+check(
+    "轮询接口也回 taskId（前端切后台回来续跑要用）",
+    payload.get("taskId") == task_id,
+    payload.get("taskId"),
+)
 if status == "failed":
     check("失败时有人话 error", bool(payload.get("error")), payload.get("error"))
 

@@ -407,6 +407,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 
 | 字段 | 出现时机 | 说明 |
 | --- | --- | --- |
+| `taskId` | 总是 | 任务 ID（与路径里的同一个）。前端「切后台回来续跑」只调这个接口，靠它把结果落回同一条记录 |
 | `status` | 总是 | `pending` / `running` / `done` / `failed` |
 | `rulesText` | 总是 | 规则层兜底文本 |
 | `elapsedMs` | 总是 | 已耗时（毫秒） |

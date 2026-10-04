@@ -136,6 +136,9 @@ def _task_payload(task: RewriteTask) -> dict:
     ``task_status`` 和「同步命中」两条路径共用，避免两处字段慢慢跑偏。
     """
     payload: dict = {
+        # 两条路径都要带 taskId：前端「切后台后回来续跑」时只调轮询接口，
+        # 拿不到 id 就没法把结果落回同一条历史记录。
+        "taskId": task.id,
         "status": task.status,
         "rulesText": task.rules_text,
         "elapsedMs": task.elapsed_ms,
