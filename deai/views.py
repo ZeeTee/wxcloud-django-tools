@@ -20,7 +20,8 @@ from django.http import JsonResponse
 
 from . import quota as quota_service
 from . import tasks
-from .auth import AuthError, get_identity
+from . import wechat
+from .auth import ANONYMOUS, AuthError, get_identity
 from .engine import build_report, is_configured, rewrite_by_rules
 from django.db.models import Count, Sum
 from django.utils import timezone
@@ -200,6 +201,13 @@ def health(request):
             "defaultSkill": DEFAULT_SKILL,
             "skills": [s.slug for s in registry.list()] + list(EXTRA_SKILLS),
             "promptFingerprints": fingerprints,
+            # 手机号授权能不能用——前端据此决定要不要显示「授权后每天 10 次」的按钮。
+            # 云调用模式只要控制台开关开了就算就绪，不需要 AppSecret。
+            "phoneAuthReady": wechat.phone_ready(),
+            "phoneAuthMode": "cloudcall" if settings.WX_OPENAPI_ENABLED else "token",
+            "quotaLimits": dict(
+                zip(("anonymous", "verified"), quota_service.limits())
+            ),
         }
     )
 
@@ -399,11 +407,135 @@ def task_status(request, task_id: str):
 
 @api("GET")
 def quota(request):
-    """查询今日剩余额度。"""
+    """查询今日剩余额度。
+
+    返回里带 ``verified`` / ``anonymousLimit`` / ``verifiedLimit``，
+    前端据此显示「授权手机号后每天可用 N 次」的引导。
+    """
     identity, err = _identity_or_error(request)
     if err:
         return err
     return ok(quota_service.get_quota(identity))
+
+
+@api("POST")
+def login(request):
+    """手机号授权，把额度从匿名档（5 次）提升到已授权档（10 次）。
+
+    前端怎么调
+    ----------
+    按钮上加 ``open-type="getPhoneNumber"``，拿到回调里的
+    ``e.detail.code``（新版手机号快速验证是 code，不再是加密数据），
+    POST 给这个接口::
+
+        { "phoneCode": "e.detail.code" }
+
+    **为什么要用手机号而不是 ``wx.login()``**：openid 是云托管自动注入的，
+    未登录也有，``wx.login()`` 换 openid 证明不了任何用户主动行为
+    （谁都能触发、微信也不校验），拿它当「登录」等于把 10 次额度白送。
+    手机号授权是用户真的点了按钮、微信背书的一次性 code，才有区分度。
+
+    安全要点
+    --------
+    1. ``getuserphonenumber`` 回包里**没有 openid**，所以身份只能取请求头里的
+       ``X-WX-OPENID``（云托管注入，前端改不了）。code 本身是一次性、几分钟
+       过期的，且由当前小程序会话下发，无法跨用户盗用。
+    2. 校验回包中的 ``watermark.appid`` 必须是本小程序（见 ``wechat.py``）。
+    3. 云调用模式下请求不带 access_token，不存在 token 泄露面。
+
+    兼容
+    ----
+    仍接受老的 ``{"code": "<wx.login 的 code>"}``（code2Session 路径），
+    但它只是弱验证、且开启「开放接口服务」后会失败，仅用于平滑过渡。
+    """
+    identity, err = _identity_or_error(request)
+    if err:
+        return err
+    data, err = _parse_body(request)
+    if err:
+        return err
+
+    phone_code = str(data.get("phoneCode") or "").strip()
+    legacy_code = str(data.get("code") or "").strip()
+
+    if phone_code:
+        return _login_by_phone(identity, phone_code)
+    if legacy_code:
+        return _login_by_code2session(identity, legacy_code)
+    return fail("CODE_EMPTY", "缺少手机号授权凭证 phoneCode", 400)
+
+
+def _login_by_phone(identity: str, phone_code: str):
+    """手机号授权路径：正经的额度升级方式。"""
+    if not wechat.phone_ready():
+        return fail(
+            "WX_NOT_CONFIGURED",
+            "服务端还没配置微信 AppID / AppSecret，暂时无法授权手机号",
+            503,
+        )
+
+    try:
+        info = wechat.get_phone_number(phone_code)
+    except wechat.WeChatError as exc:
+        logger.warning("手机号授权失败：%s", exc)
+        return fail("WX_PHONE_FAILED", str(exc), 400)
+
+    if identity == ANONYMOUS:
+        # 本地开发没有云托管注入的身份头，链路本身走不通（无法确定给谁提额度）。
+        # 生产环境不存在这种情况。
+        logger.warning("匿名模式下授权手机号，无法归属用户：%s", info["masked"])
+        return fail("NO_IDENTITY", "当前环境拿不到用户身份，无法提升额度", 400)
+
+    quota_service.mark_verified(
+        identity,
+        phone_masked=info["masked"],
+        phone_hash=info["fingerprint"],
+        method="phone",
+    )
+    logger.info("用户 %s 手机号授权成功（%s），额度提升", identity, info["masked"])
+    return ok(
+        {
+            "verified": True,
+            "phoneMasked": info["masked"],
+            "quota": quota_service.get_quota(identity),
+        }
+    )
+
+
+def _login_by_code2session(identity: str, code: str):
+    """[兼容] 老的 ``wx.login()`` 登录路径。
+
+    code2Session 换回来的 openid 必须与请求头里的 ``X-WX-OPENID`` 一致——
+    否则任何人拿别人的 code 来调这个接口都能把自己的额度翻倍。
+    """
+    logger.warning("使用了已废弃的 code2Session 登录路径，建议前端改为手机号授权")
+    if not wechat.is_configured():
+        return fail("WX_NOT_CONFIGURED", "服务端还没配置微信 AppID / AppSecret", 503)
+
+    try:
+        session = wechat.code2session(code)
+    except wechat.WeChatError as exc:
+        return fail("WX_LOGIN_FAILED", str(exc), 400)
+
+    openid = session["openid"]
+    if identity == ANONYMOUS:
+        # 本地开发没有云托管注入的身份头，只能拿 code2Session 的结果当身份。
+        # 注意：后续请求的 identity 仍是 "anonymous"，所以本地看不到额度提升——
+        # 这是开发模式的固有限制，生产环境不存在。
+        logger.warning("匿名模式下登录，用 code2Session 的 openid 标记：%s", openid)
+    elif openid != identity:
+        logger.warning(
+            "登录 openid 不匹配：header=%s code2session=%s", identity, openid
+        )
+        return fail("OPENID_MISMATCH", "登录信息与当前用户不一致，请重新登录", 400)
+    else:
+        openid = identity
+
+    quota_service.mark_verified(
+        openid, session.get("session_key") or "", method="code2session"
+    )
+    logger.info("用户 %s 登录成功，额度提升到已登录档", openid)
+    return ok({"verified": True, "quota": quota_service.get_quota(openid)})
 
 
 @api("POST")

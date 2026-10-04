@@ -115,6 +115,73 @@ class Feedback(models.Model):
         return f"<Feedback {self.task_id} {self.rating}>"
 
 
+class UserProfile(models.Model):
+    """用户状态：记录「用户是否主动授权过手机号」。
+
+    为什么需要它：``X-WX-OPENID`` 是云托管自动注入的，**未登录也能拿到**，
+    所以它天然就能唯一区分用户（匿名额度靠它计数，清缓存也重置不了）。
+    但这也意味着「未登录」和「已登录」在身份上没有区别，而 ``wx.login()``
+    换 openid 同样证明不了什么——谁都能触发，微信也不做任何校验。
+
+    所以这里用的是**手机号快速验证**：用户在前端点 ``open-type="getPhoneNumber"``
+    的按钮，微信下发一个一次性 code，后端拿它调 ``getuserphonenumber`` 换手机号。
+    这个动作是用户真的点了、微信背书的，验证通过才记 ``verified_at``，
+    额度从 5 次提到 10 次。
+
+    openid 直接做主键：一个用户一行，天然去重。
+
+    **手机号为什么打码存**：手机号是个人信息，库里留全量号码只会增加泄露风险，
+    而业务上并不需要完整号码（不发短信、不做客服外呼）。所以只存
+    ``phone_masked``（``138****8000``，给前端展示用）和 ``phone_hash``
+    （HMAC 指纹，用于「同一手机号绑了多个 openid」这类排查）。
+    """
+
+    openid = models.CharField(max_length=64, primary_key=True)
+    # 旧的 code2Session 会返回 session_key，留着兼容老数据
+    session_key = models.CharField(max_length=64, blank=True, default="")
+    # 打码手机号，如 138****8000。空 = 没授权过手机号
+    phone_masked = models.CharField(max_length=20, blank=True, default="")
+    # 手机号的 HMAC 指纹（SECRET_KEY 加盐），可比较、不可反查
+    phone_hash = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    # 验证方式：phone = 手机号授权；code2session = 旧登录方式（弱验证，仅兼容）
+    login_method = models.CharField(max_length=20, blank=True, default="")
+    # 最近一次成功验证的时间。为空 = 从未验证 = 走匿名额度
+    verified_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "deai_user_profile"
+
+    def __str__(self) -> str:  # pragma: no cover - 仅调试用
+        return f"<UserProfile {self.openid} verified={self.verified_at is not None}>"
+
+
+class WxAccessToken(models.Model):
+    """微信 ``access_token`` 的共享缓存，固定只有 id=1 这一行。
+
+    **只在 ``WX_OPENAPI_ENABLED=False``（自管 token 模式）下使用**；
+    云调用模式由开放接口服务自动注入，不落库。
+
+    为什么存数据库而不是进程内存：微信的 access_token 是**全局唯一**的，
+    新发一个旧的立即作废。云托管会多副本运行，各副本各存内存缓存的话，
+    每次刷新都会把别的副本正在用的 token 顶失效，表现为随机 40001。
+    存库 + 提前 5 分钟过期，可以把刷新次数降到最低。
+    即便如此仍有极小概率撞车，所以调用侧遇到 40001/42001 会强制刷新重试一次。
+    """
+
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1)
+    token = models.CharField(max_length=512)
+    expires_at = models.DateTimeField()
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "deai_wx_access_token"
+
+    def __str__(self) -> str:  # pragma: no cover
+        return f"<WxAccessToken expires_at={self.expires_at}>"
+
+
 class QuotaUsage(models.Model):
     """按天统计的免费额度。规则层不计次，只有 AI 深度改写才消耗。"""
 

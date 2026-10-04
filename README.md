@@ -238,10 +238,32 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
    想确认建表结果，可在容器内执行：`python scripts/init_db.py --check-only`
    （该脚本也能手动建库建表，见第三节）。
 
-6. **发布**：保存后发布版本，访问 `https://<域名>/api/health` 确认
+6. **开手机号授权（想让用户从 5 次提到 10 次才需要）**：控制台 → 云调用：
+
+   1. 打开「**开放接口服务**」开关；
+   2. 在「微信令牌权限配置」里加路径白名单：`/wxa/business/getuserphonenumber`
+      （**只填路径**，不带 `?` 和参数）；
+   3. **打开开关后重新构建一次服务版本**——该开关按「版本创建时刻」生效，
+      老版本即使开关打开了也不生效。
+
+   开了之后容器内用 HTTP 请求 `api.weixin.qq.com` 且不带 access_token，
+   由旁加载组件自动注入，**连 `WX_SECRET` 都不用配**。建议仍配 `WX_APPID`，
+   用于校验手机号回包的 `watermark.appid`。
+
+   > ⚠️ **先确认两个硬门槛，否则这一步白做**：
+   > - **资质**：该能力「针对**非个人主体，且完成了认证**的小程序开放」。
+   >   个人主体小程序调不通，服务端会返回 `48001`。
+   > - **计费**：自 2023-08-28 起**每次成功调用 0.03 元**，每个小程序账号有
+   >   **1000 次体验额度**（正式版/体验版/开发版共用），用完后必须买资源包。
+   >   在「微信公众平台 → 付费管理」查看余额。
+
+   > 注意：开启「开放接口服务」后 `sns/jscode2session` 会因白名单报错。
+   > 本项目已不依赖它，无影响；详见第六节「手机号授权」。
+
+7. **发布**：保存后发布版本，访问 `https://<域名>/api/health` 确认
    `llmConfigured: true`。
 
-7. **小程序前端**：前端是**独立项目**，不在本仓库。在那边配置：
+8. **小程序前端**：前端是**独立项目**，不在本仓库。在那边配置：
 
    ```js
    module.exports = {
@@ -253,7 +275,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
    并把小程序后台的**基础库最低版本设为 ≥ 2.23.0**（否则 `callContainer` 不可用）。
    前端不需要配「服务器域名」——`callContainer` 免域名校验、免备案。
 
-8. **联调**：在开发者工具里跑一次「关于」页的配置自检，确认能打通。
+9. **联调**：在开发者工具里跑一次「关于」页的配置自检，确认能打通。
 
 > ⚠️ `container.config.json` 只在「控制台一键模板部署」那一次生效；自己新建服务 +
 > 传代码包时它会被忽略，端口/规格/环境变量都要在控制台手填。
@@ -279,7 +301,14 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `DJANGO_DEBUG` | `false` | |
 | `DJANGO_ALLOWED_HOSTS` | `*` | 云托管 Host 不固定，默认放开 |
 | `DEAI_MAX_INPUT_CHARS` | `5000` | 单次输入上限 |
-| `DEAI_DAILY_LIMIT` | `20` | 每人每天的 AI 改写次数（规则层不限） |
+| `DEAI_DAILY_LIMIT_ANONYMOUS` | `5` | 未授权手机号用户每天的 AI 改写次数 |
+| `DEAI_DAILY_LIMIT_VERIFIED` | `10` | 已授权手机号用户每天的 AI 改写次数 |
+| `DEAI_DAILY_LIMIT` | `0` | 旧变量：>0 时两档都用它（兼容老部署） |
+| `WX_OPENAPI_ENABLED` | `true` | 用云调用（开放接口服务）调手机号接口，**免 access_token** |
+| `WX_OPENAPI_BASE` | `http://api.weixin.qq.com` | 云调用地址，**必须 HTTP**（见下方「手机号授权」） |
+| `WX_APPID` | 空 | 小程序 AppID。**建议配**：用于校验手机号回包的 `watermark.appid` |
+| `WX_SECRET` | 空 | 小程序 AppSecret。**云调用模式下不需要**；仅自管 token / 旧 code2Session 用 |
+| `WX_LOGIN_TIMEOUT` | `10` | 调微信接口的超时（秒） |
 | `DEAI_TASK_TIMEOUT_SECONDS` | `120` | 超时仍无结果的任务判为失败 |
 | `DEAI_WORKERS` | `4` | 后台改写线程数 |
 | `DEAI_SYNC_WAIT_SECONDS` | `12` | 混合模式：同步等待多久，超时才转轮询；`0` 为纯异步 |
@@ -307,7 +336,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 
 | # | 方法 | 路径 | 作用 | 上送参数 | 消耗额度 |
 | --- | --- | --- | --- | --- | --- |
-| 1 | GET | `/api/health` | 部署自检：密钥是否配好、当前 provider、已加载 skill、prompt 指纹 | 无 | 否 |
+| 1 | GET | `/api/health` | 部署自检：密钥是否配好、当前 provider、已加载 skill、prompt 指纹、手机号授权是否就绪 | 无 | 否 |
 | 2 | GET | `/api/skills` | 列出可用 skill 与场景/强度选项（前端据此动态渲染，别写死） | 无 | 否 |
 | 3 | GET | `/api/quota` | 查今日剩余改写次数 | 无 | 否 |
 | 4 | GET | `/api/usage` | 账户余额 + 今日用量汇总（任务数、token、费用） | 无 | 否 |
@@ -316,6 +345,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | 7 | GET | `/api/task/<taskId>` | 取改写结果（轮询或补查） | 路径 `taskId` | 否 |
 | 8 | POST | `/api/feedback` | 对某次改写结果评价 | body `taskId` `rating` `reason` `comment` | 否 |
 | 9 | GET | `/api/feedback/summary` | 当前用户的评价统计 | 无 | 否 |
+| 10 | POST | `/api/auth/login` | 手机号授权，额度从 5 次提升到 10 次 | body `phoneCode` | 否 |
 | 10 | GET/POST | `/api/count` | 模板原有的计数器示例（保持原格式，未改动） | POST body `action` | 否 |
 | 11 | GET | `/` | 模板原有的欢迎页 | 无 | 否 |
 
@@ -418,7 +448,112 @@ other         其他
 
 ---
 
-### 公共结构
+#### POST /api/auth/login —— 手机号授权并提升额度
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `phoneCode` | string | ✅ | `open-type="getPhoneNumber"` 回调里的 `e.detail.code` |
+| `code` | string | ❌ | **已废弃**，老的 `wx.login()` code，仅兼容旧前端 |
+
+前端写法：
+
+```html
+<button open-type="getPhoneNumber" bindgetphonenumber="onPhone">授权手机号，每天 10 次</button>
+```
+
+```js
+onPhone(e) {
+  // errno 1400001 = 小程序手机号资源包额度不足，此时不会有 code
+  if (e.detail.errno === 1400001) {
+    return wx.showToast({ title: '授权服务繁忙，请稍后再试', icon: 'none' })
+  }
+  if (!e.detail.code) return wx.showToast({ title: '已取消授权', icon: 'none' })
+  wx.cloud.callContainer({
+    config: { env: '环境ID' },
+    path: '/api/auth/login',
+    header: { 'X-WX-SERVICE': '服务名', 'content-type': 'application/json' },
+    method: 'POST',
+    data: { phoneCode: e.detail.code },
+  })
+}
+```
+
+> ⚠️ **`e.detail.code` 必须传给 `phoneCode`**。`getPhoneNumber` 的 code 与
+> `wx.login` 的 code **作用不同、不能混用**（官方原文），传错字段只会得到
+> 一个「授权凭证已失效」。
+
+返回 `{verified: true, phoneMasked: "138****8000", quota: {...}}`（**不回传完整手机号**）。
+可能的错误码：`CODE_EMPTY`（400）、`WX_NOT_CONFIGURED`（503）、`WX_PHONE_FAILED`（400，
+授权凭证过期／被拒／不属于本小程序／无手机号能力权限）、`NO_IDENTITY`（400，拿不到
+openid，仅本地开发）。
+
+**这个能力有两个硬门槛**
+
+| 门槛 | 说明 |
+| --- | --- |
+| 资质 | 只对「**非个人主体，且完成了认证**的小程序」开放。个人主体调不通，返回 `48001` |
+| 计费 | **每次成功调用 0.03 元**（2023-08-28 起）。每个账号 1000 次体验额度，正式/体验/开发版共用，用完要在「付费管理」买资源包 |
+
+所以「授权后每天 10 次」不要做成诱导所有人狂点的弹窗，正常放一个入口即可；
+额度耗尽时前端按钮回调里会拿到 `errno === 1400001`（此时不产生 code、不计费）。
+
+**为什么用手机号而不是 `wx.login()`**
+
+`openid` 是云托管**自动注入**的，未登录也有；`wx.login()` 换 openid 更是什么都证明不了——
+谁都能触发，微信也不做任何校验，拿它当「登录」等于把 10 次额度白送。
+手机号授权是**用户真的点了按钮、微信背书**的一次性 code（5 分钟有效、只能消费一次），
+才有区分度。
+
+**安全要点**
+
+1. `getuserphonenumber` 回包里**没有 openid**，身份只能取请求头里的 `X-WX-OPENID`
+   （云托管注入，前端改不了）。code 本身一次性、几分钟过期、由当前小程序会话下发。
+2. 校验回包 `watermark.appid` 必须等于本小程序 AppID，否则拒绝（防拿到别人的号码）。
+3. 手机号**打码存储**（`138****8000`）+ HMAC 指纹，库里不留完整号码。
+
+**部署前置条件（不做就会一直报白名单错误）**
+
+本项目默认走**云调用**（`WX_OPENAPI_ENABLED=true`），需要在云托管控制台：
+
+1. 打开「云调用 → 开放接口服务」开关；
+2. 在「微信令牌权限配置」里加白名单：`/wxa/business/getuserphonenumber`
+   （**只填路径**，不带 `?` 和参数）；
+3. **开关打开后重新构建一次服务版本**——这个开关是按「版本创建时刻」生效的。
+
+云调用模式下容器内用 **HTTP** 请求 `api.weixin.qq.com` 且**不带 access_token**，
+由旁加载组件自动注入，所以**连 AppSecret 都不用配**。
+
+> ⚠️ 开启「开放接口服务」后 `sns/jscode2session` 会失效（它本身不带 access_token，
+> 会被当成云调用去查白名单，而白名单里没有它）。本项目已不依赖 code2Session
+> 判断身份，所以没有影响；只有老前端传 `code` 时才会踩到。
+>
+> 若确实无法开启开放接口服务，把 `WX_OPENAPI_ENABLED` 设为 `false`，
+> 改走自管 access_token（需要配 `WX_SECRET`），token 缓存在
+> `deai_wx_access_token` 表里给多副本共享。
+
+### 用户身份与额度
+
+| 状态 | 身份来源 | 每日额度 | 用户要做什么 |
+| --- | --- | --- | --- |
+| 未授权 | `X-WX-OPENID`（云托管自动注入） | **5 次** | **什么都不用做** |
+| 已授权手机号 | 同一个 openid | **10 次** | 点「授权手机号」按钮一次 |
+
+**一个容易误解的点**：微信小程序里 `openid` 是**静默获取**的，不需要任何授权弹窗，
+云托管会自动把它注入到 `X-WX-OPENID` 请求头。所以**「不登录也能唯一区分用户」这件事
+现在就已经做到了**，不需要额外方案，也不需要前端本地存储。
+
+但反过来，这也意味着「未登录」和「已登录」**在身份上没有本质区别**——要区分两档额度，
+必须有一个用户主动做过、且微信背书的动作，这就是手机号授权的作用。
+
+**为什么匿名额度也记在后端**：有人会想「未登录就用前端本地存储计数」。但那样用户
+**清一次小程序缓存次数就归零**，等于没有限制，而且前端数据可被篡改。用 openid 记在
+后端，清缓存重置不了（要换微信号才行），代价只是一次数据库查询。
+
+`/api/quota` 返回 `verified`、`anonymousLimit`、`verifiedLimit`、`phoneMasked`，
+前端据此显示「授权手机号后每天可用 10 次」的引导。未授权额度用尽时，
+`QUOTA_EXCEEDED` 的错误文案里也会带上这个引导。
+
+
 
 **`report`（体检报告）**
 
@@ -471,6 +606,10 @@ other         其他
 | `BAD_JSON` / `BAD_ENCODING` | 400 | 请求体不是合法 JSON / UTF-8 |
 | `METHOD_NOT_ALLOWED` | 405 | 请求方法不对（返回的仍是 JSON 信封） |
 | `SKILL_NOT_FOUND` | 400 | 传了不存在的 skill（刻意不兜底） |
+| `CODE_EMPTY` | 400 | 登录时没传 code |
+| `WX_NOT_CONFIGURED` | 503 | 服务端没配微信 AppID / AppSecret |
+| `WX_LOGIN_FAILED` | 400 | 微信登录失败（code 无效、已用过、被风控等） |
+| `OPENID_MISMATCH` | 400 | 登录换回的 openid 与当前请求身份不一致 |
 | `BAD_RATING` | 400 | `rating` 不是 `good`/`bad` |
 | `UNAUTHORIZED` | 401 | 拿不到调用方身份 |
 | `FORBIDDEN` | 403 | 访问他人的任务 |
@@ -644,6 +783,7 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 | `deai_rewrite_task` | 改写任务：状态、结果、用量、费用 | 主键 `id`；索引 `(openid, created_at)` |
 | `deai_feedback` | 用户对改写结果的评价 | 唯一 `(task_id, openid)` |
 | `deai_quota_usage` | 每日免费额度计数 | 唯一 `(openid, day)` |
+| `deai_user_profile` | 用户登录状态（决定走哪档额度） | 主键 `openid` |
 | `Counters` | 模板原有的计数器示例 | 主键 `id` |
 
 > **字符集必须是 `utf8mb4`**，否则 emoji 会静默变成 `?`（见第三节的踩坑记录）。
@@ -736,7 +876,41 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 > 这张表是**最不能丢**的：容器缩容重启后如果归零，配额限制就形同虚设。
 > 这也是必须用 MySQL 而不是容器内 SQLite 的主要原因。
 
-### 7.4 `Counters` —— 模板原有
+### 7.4 `deai_user_profile` —— 用户验证状态
+
+决定该用户走未授权档（5 次）还是已授权档（10 次）。openid 直接做主键，一个用户一行。
+
+| 字段 | 类型 | 取值 / 默认 | 含义 |
+| --- | --- | --- | --- |
+| `openid` | varchar(64) | **主键** | 用户标识。与 `X-WX-OPENID` 同源 |
+| `session_key` | varchar(64) | 空串 | 旧的 `code2Session` 返回的会话密钥，仅兼容老数据 |
+| `phone_masked` | varchar(20) | 空串 | 打码手机号，如 `138****8000`。**库里不存完整号码** |
+| `phone_hash` | varchar(64) | 空串，索引 | 手机号的 HMAC 指纹（`SECRET_KEY` 加盐）。可比较、不可反查 |
+| `login_method` | varchar(20) | 空串 | `phone` = 手机号授权；`code2session` = 旧登录方式（弱验证） |
+| `verified_at` | datetime(6) | 可空，索引 | 最近一次成功验证的时间。**为空 = 从未授权 = 走匿名额度** |
+| `created_at` | datetime(6) | 自动写入 | |
+| `updated_at` | datetime(6) | 自动更新 | |
+
+> 注意 `QuotaUsage` 里**不区分**未授权与已授权——额度计数只有一份，档位由这张表决定。
+> 这样用户授权后已用的次数不会清零（否则「先匿名用完 5 次再授权拿 10 次」会变成 15 次）。
+
+### 7.5 `deai_wx_access_token` —— 微信 access_token 缓存
+
+**只在 `WX_OPENAPI_ENABLED=false`（自管 token 模式）时使用**；默认的云调用模式由
+开放接口服务自动注入 token，这张表一直是空的。
+
+固定只有 `id=1` 这一行。存数据库而不是进程内存，是因为微信的 access_token 全局唯一，
+新发一个旧的立即作废，而云托管是多副本运行——各副本各存内存缓存会互相顶掉，
+表现为随机 `40001`。
+
+| 字段 | 类型 | 取值 / 默认 | 含义 |
+| --- | --- | --- | --- |
+| `id` | int | **主键**，固定 `1` | 单行表 |
+| `token` | varchar(512) | | 当前的 access_token |
+| `expires_at` | datetime(6) | | 过期时间（已提前 5 分钟） |
+| `updated_at` | datetime(6) | 自动更新 | 最近一次刷新时间 |
+
+### 7.6 `Counters` —— 模板原有
 
 上游模板自带的计数器示例，保持可用、未改动行为。
 
@@ -791,6 +965,16 @@ POST /api/rewrite
   （`connectContainer`）或自建公网域名。
 - **改写可能丢信息**：改写结果会过一道保真校验（对比数字、字数比例）并在界面提示，
   但**请务必人工再读一遍再发布**。
+- **手机号快速验证有两个硬门槛**：①只对**非个人主体 + 已认证**的小程序开放
+  （个人主体返回 `48001`）；②**每次成功调用 0.03 元**，每账号 1000 次体验额度
+  （正式/体验/开发版共用），用完后要在「微信公众平台 → 付费管理」买资源包。
+  所以「授权提额度」不要设计成诱导所有人狂点，正常放一个入口即可。
+  额度不足时前端按钮回调拿到 `errno === 1400001`（不产生 code、不计费），
+  服务端侧的 `48001` 已被翻译成「该小程序没有手机号快速验证的权限
+  （需非个人主体且已认证）」。
+- **`deai_wx_access_token` 表只在自管 token 模式下有内容**。默认云调用模式下它是空表，
+  容器里也不存任何微信凭证；如果开了 `WX_OPENAPI_ENABLED=false`，请确保 MySQL 可用，
+  否则每次调用都要重新换 token。
 - 模型密钥若写进 `container.config.json` 会进仓库，**请只用控制台环境变量**。
 
 ---

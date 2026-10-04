@@ -43,6 +43,8 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "wxcloudrun.settings")
 BUSINESS_TABLES: dict[str, str] = {
     "deai_rewrite_task": "改写任务（轮询、用量、反馈都要靠它）",
     "deai_quota_usage": "每日额度（不开数据库就会丢，用户可无限白嫖）",
+    "deai_user_profile": "用户验证状态（决定额度走 5 次还是 10 次档）",
+    "deai_wx_access_token": "微信 access_token 缓存（仅自管 token 模式用；云调用模式是空表）",
     "deai_feedback": "用户评价",
     "Counters": "模板原有的计数器示例",
 }

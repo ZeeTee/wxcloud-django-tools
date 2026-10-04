@@ -72,6 +72,17 @@ body = r.json()
 check("health 信封正确", body.get("ok") is True and "llmConfigured" in body.get("data", {}), body)
 check("health 识别到已配置密钥", body["data"]["llmConfigured"] is True, body)
 check("health 暴露了已加载的 skill", "humanizer" in body["data"].get("skills", []), body["data"].get("skills"))
+hd = body["data"]
+check(
+    "health 报告手机号授权就绪（默认云调用模式）",
+    hd.get("phoneAuthReady") is True and hd.get("phoneAuthMode") == "cloudcall",
+    {k: hd.get(k) for k in ("phoneAuthReady", "phoneAuthMode")},
+)
+check(
+    "health 报告生效的两档额度（含 DEAI_DAILY_LIMIT 兜底）",
+    hd.get("quotaLimits") == {"anonymous": 2, "verified": 2},
+    hd.get("quotaLimits"),
+)
 
 print("\n=== 1.1 Skill 列表 ===")
 r = client.get("/api/skills", **AUTH)
@@ -167,6 +178,78 @@ print("\n=== 4. 额度 ===")
 r = client.get("/api/quota", **AUTH)
 q = r.json()["data"]
 check("初始额度 used=0 limit=2", q["used"] == 0 and q["limit"] == 2 and q["remaining"] == 2, q)
+check(
+    "返回双档信息（verified / anonymousLimit / verifiedLimit）",
+    {"verified", "anonymousLimit", "verifiedLimit"} <= set(q),
+    q,
+)
+check("未登录时 verified=false", q.get("verified") is False, q)
+
+print("\n=== 4.5 手机号授权（提升额度）===")
+# 用独立的 openid，避免影响第 7 节「未授权额度耗尽」的断言
+PHONE_AUTH = {"HTTP_X_WX_OPENID": "smoke-phone-openid"}
+r = post_json("/api/auth/login", {}, **PHONE_AUTH)
+check(
+    "缺 phoneCode -> 400 CODE_EMPTY",
+    r.status_code == 400 and r.json()["error"]["code"] == "CODE_EMPTY",
+    r.json(),
+)
+
+# 冒烟脚本不联网，把微信接口换成本地桩。真实链路（云调用 HTTP 报文、
+# watermark 校验、错误码翻译）在 tests/test_phone_auth.py 里覆盖。
+from unittest.mock import patch  # noqa: E402
+
+import deai.wechat as wechat_mod  # noqa: E402
+
+FAKE_PHONE = {
+    "phone": "+86 13800138000",
+    "pure_phone": "13800138000",
+    "country_code": "86",
+    "masked": "138****8000",
+    "fingerprint": "0123456789abcdef0123456789abcdef",
+}
+with patch.object(wechat_mod, "get_phone_number", return_value=FAKE_PHONE) as phone_mock:
+    r = post_json("/api/auth/login", {"phoneCode": "fake-phone-code"}, **PHONE_AUTH)
+check("手机号授权 -> 200", r.status_code == 200, r.json())
+d = r.json().get("data", {})
+check("返回 verified=true", d.get("verified") is True, d)
+check("返回打码手机号（不返回完整号码）", d.get("phoneMasked") == "138****8000", d)
+check(
+    "响应里没有完整手机号",
+    "13800138000" not in r.content.decode("utf-8"),
+    r.content.decode("utf-8"),
+)
+check("授权时把 phoneCode 透传给微信", phone_mock.call_args.args[0] == "fake-phone-code", phone_mock.call_args)
+check("quota 里档位已切换", d.get("quota", {}).get("verified") is True, d.get("quota"))
+
+r = client.get("/api/quota", **PHONE_AUTH)
+qd = r.json().get("data", {})
+check("再查额度仍是已授权", qd.get("verified") is True, qd)
+check("quota 带回打码手机号", qd.get("phoneMasked") == "138****8000", qd)
+
+with patch.object(
+    wechat_mod,
+    "get_phone_number",
+    side_effect=wechat_mod.WeChatError("这个手机号不属于当前小程序，已拒绝"),
+):
+    r = post_json("/api/auth/login", {"phoneCode": "stolen"}, **PHONE_AUTH)
+check(
+    "微信侧校验失败 -> 400 WX_PHONE_FAILED",
+    r.status_code == 400 and r.json()["error"]["code"] == "WX_PHONE_FAILED",
+    r.json(),
+)
+check(
+    "失败文案是人话",
+    "不属于当前小程序" in r.json()["error"]["message"],
+    r.json()["error"]["message"],
+)
+
+r = post_json("/api/auth/login", {"code": "fake-code"}, **PHONE_AUTH)
+check(
+    "旧 code2Session 路径仍兼容：未配密钥 -> 503",
+    r.status_code == 503 and r.json()["error"]["code"] == "WX_NOT_CONFIGURED",
+    r.json(),
+)
 
 print("\n=== 5. 异步改写链路（模型连不上，验证失败兜底）===")
 r = post_json("/api/rewrite", {"text": AI_TEXT, "mode": "general"}, **AUTH)
@@ -258,10 +341,28 @@ check(
 )
 
 print("\n=== 7. 额度耗尽 ===")
-r = post_json("/api/rewrite", {"text": AI_TEXT}, **AUTH)
-check("第 2 次改写成功（used=2）", r.status_code == 200 and r.json()["data"]["quota"]["used"] == 2, r.json().get("data", {}).get("quota"))
-r = post_json("/api/rewrite", {"text": AI_TEXT}, **AUTH)
-check("第 3 次 -> 429 QUOTA_EXCEEDED", r.status_code == 429 and r.json()["error"]["code"] == "QUOTA_EXCEEDED", r.json())
+# 注意：额度按「北京时间当天」重置。如果测试恰好跨过午夜（真的遇到过：
+# 第 5 部分在 23:59 消耗、第 7 部分在 00:00 检查，计数已归零），
+# 「第 N 次一定失败」这种断言就会假失败。所以改成一直调到触顶为止。
+hit_limit = False
+for attempt in range(1, 6):
+    r = post_json("/api/rewrite", {"text": AI_TEXT}, **AUTH)
+    if r.status_code == 429:
+        body = r.json()
+        check(
+            f"第 {attempt} 次触顶 -> 429 QUOTA_EXCEEDED",
+            body.get("error", {}).get("code") == "QUOTA_EXCEEDED",
+            body,
+        )
+        check(
+            "额度耗尽的错误文案里带授权引导",
+            "授权手机号" in body.get("error", {}).get("message", ""),
+            body.get("error", {}).get("message"),
+        )
+        hit_limit = True
+        break
+    check(f"第 {attempt} 次仍可用（返回 200）", r.status_code == 200, r.status_code)
+check("额度最终会被耗尽（对跨天鲁棒）", hit_limit, "调了 5 次仍未触顶")
 
 print("\n=== 8. 身份校验（关闭匿名）===")
 from django.conf import settings as dj_settings  # noqa: E402
