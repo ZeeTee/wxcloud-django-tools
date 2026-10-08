@@ -100,7 +100,8 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 │   ├── auth.py                 从云托管请求头取 openid
 │   ├── quota.py                每日额度（分未授权 / 已授权两档）
 │   ├── wechat.py               手机号授权（云调用 / 自管 token）
-│   └── tasks.py                后台线程池 + 超时判失败
+│   ├── tasks.py                后台线程池 + 超时判失败
+│   └── middleware.py           请求日志中间件（参数 + 身份头 + IP）
 ├── scripts/
 │   ├── dev.sh                  本地一键起服务
 │   ├── init_db.py              建库 + 建表 + 校验（幂等）
@@ -153,7 +154,7 @@ curl -s localhost:8080/api/count
 跑测试（**都不需要联网、不需要模型密钥**）：
 
 ```bash
-python3 -m unittest discover -s tests -t .   # 引擎 / skill / 额度 / 微信封装单测，143 项
+python3 -m unittest discover -s tests -t .   # 引擎 / skill / 额度 / 微信封装 / 请求日志单测，164 项
 python3 scripts/smoke_api.py                 # 接口端到端冒烟，87 项
 python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，32 项
 ```
@@ -325,6 +326,8 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `DEAI_SYNC_WAIT_SECONDS` | `12` | 混合模式：同步等待多久，超时才转轮询；`0` 为纯异步 |
 | `DEAI_ALLOW_ANONYMOUS` | =`DEBUG` | **生产必须 `false`**，否则公网可白嫖 |
 | `DEAI_DEBUG_HEADERS` | =`DEBUG` | 开启诊断接口 `/api/debug/headers`（回显身份头）。**排查完立刻关**，它会回显 openid |
+| `DEAI_LOG_REQUESTS` | `true` | 请求日志：每个请求一行，含**全部参数 + 身份头 + 来源 IP**。对外放开前建议设 `false` |
+| `DEAI_LOG_MAX_CHARS` | `2000` | 请求日志里单个字段最多打多少字，超了截断；`0` 表示不截断 |
 | `MYSQL_ADDRESS` | 空 | 配了用 MySQL，不配用 SQLite |
 | `MYSQL_ALLOW_57` | `false` | 允许连 MySQL 5.7（见下方说明，**建议升级而非长期开启**） |
 | `MYSQL_DATABASE` | `django_demo` | |
@@ -738,6 +741,45 @@ curl -s https://<你的域名>/api/debug/headers | python3 -m json.tool
 > 当前代码只把它写进日志、**没有强制校验**，也就是说公网直连只要自带
 > `X-WX-OPENID` 就会被当真（见「已知限制」）。
 
+#### 在环境里看请求日志
+
+上面那个诊断接口要改环境变量 + 重新发布。**更省事的办法是直接看日志**——
+`RequestLogMiddleware` 默认开着（`DEAI_LOG_REQUESTS=true`），每个请求都会打一行
+到 stdout，云托管自动采集。
+
+看日志的地方：**云托管控制台 → 服务 → 服务日志**（选对应环境和版本）。
+
+日志长这样（一个请求一行，方便 grep）：
+
+```
+[req] POST /api/rewrite -> 200 1523ms | has_openid=True has_identity=True openid=oXXXX from_openid=- appid=wxXXXX env=prod-1 source=1 | ip=1.2.3.4 | params=body={"text": "首先，我们要明确目标。", "skill": "humanizer", "mode": "general", "intensity": "medium"} | headers={"Host": "…", "X-Wx-Openid": "oXXXX", "X-Wx-Source": "1", …}
+```
+
+**怎么用它确认身份头**：在日志里搜 `has_openid`。
+
+| 你看到的 | 含义 |
+| --- | --- |
+| `has_openid=True` + `openid=oXXXX` | 平台正常注入了——**未登录也有值** |
+| `has_openid=False has_identity=False` | **什么都没注入**。如果不是公网调用，说明没走 `callContainer` |
+| `has_openid=False has_identity=True` + `from_openid=…` | 资源复用场景（环境归属另一个账号） |
+| `source=-` | 不是微信链路（`X-WX-SOURCE` 缺失） |
+
+几个实现细节，排查时用得上：
+
+- **`has_openid` 和 `has_identity` 是两个不同的东西**：前者只看 `X-WX-OPENID`，
+  后者是「两个头任一个有」。只按后者算的话，资源复用场景会打出
+  「`has_openid=True` 但 `openid=-`」这种自相矛盾的日志。
+- **中间件读 `request.body` 不会把 view 的 body 吃掉**——Django 首次访问会把原始
+  字节缓存进 `request._body`。这条有单测专门盯着，别改成 `read()`。
+- **`headers={...}` 里的名字是 Django 的写法**（`X-WX-OPENID` 显示成 `X-Wx-Openid`）。
+  header 大小写不敏感、取值不受影响；前面 `openid=` / `source=` 那段保持官方写法。
+- **`cookie` / `authorization` 永远不打**，免得以后接了鉴权把凭证写进日志。
+- **超长会截断**并标注 `…(截断，共 N 字)`，用 `DEAI_LOG_MAX_CHARS` 调。
+- **401 / 404 也会记**——排查身份问题时最该看的就是被拒的那条。
+
+> ⚠️ 它会把 **openid 和请求体原文**（用户要改写的文稿）写进日志。
+> 排查阶段开着的收益远大于成本，但**对外放开前建议设 `DEAI_LOG_REQUESTS=false`**。
+
 
 
 **`report`（体检报告）**
@@ -1140,6 +1182,9 @@ POST /api/rewrite
 
 ## 九、已知限制
 
+- **请求日志默认开着，会把 openid 和请求体原文写进日志**（`DEAI_LOG_REQUESTS`）。
+  这是为了让「X-WX-OPENID 到底有没有值」这类问题在一次部署内就能看清楚，
+  代价是日志里有用户标识和用户文稿。**对外放开前记得设 `false`**。
 - **`X-WX-SOURCE` 没有被强制校验**（安全相关的待办）。`deai/auth.py` 只读
   `X-WX-OPENID` / `X-WX-FROM-OPENID`，不判断来源。官方文档说「保证调用来源是微信
   生态端，**请判断 `X-WX-SOURCE` 头部是否存在**」，而这个头当前只进了日志。

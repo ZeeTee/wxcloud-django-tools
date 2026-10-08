@@ -67,6 +67,8 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # 放最前面：这样连被后面中间件拒掉的请求也能记上，状态码也是最外层看到的
+    "deai.middleware.RequestLogMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -209,6 +211,15 @@ DEAI_ALLOW_ANONYMOUS = env_bool("DEAI_ALLOW_ANONYMOUS", DEBUG)
 # 默认只在 DEBUG 下开。线上排查「X-WX-OPENID 到底有没有被注入」时可以临时设 true，
 # **查完立刻关掉**——它会回显 openid，属于敏感信息。
 DEAI_DEBUG_HEADERS = env_bool("DEAI_DEBUG_HEADERS", DEBUG)
+# 请求日志（中间件）：每个请求一行，含全部参数、身份头和来源 IP。
+#
+# ⚠️ 默认**开着**，因为它就是用来排查「X-WX-OPENID 有没有值」的——
+#    关着的话部署上去什么都看不到，还得再来一轮。但它会把 openid 和请求体
+#    原文（用户要改写的文稿）写进日志，**对外放开前建议设 false 关掉**。
+DEAI_LOG_REQUESTS = env_bool("DEAI_LOG_REQUESTS", True)
+# 请求日志里单个字段（body / headers / query）最多打多少字，超了截断。
+# 设为 0 表示不截断。
+DEAI_LOG_MAX_CHARS = env_int("DEAI_LOG_MAX_CHARS", 2000)
 # 后台改写线程池并发数
 DEAI_WORKERS = env_int("DEAI_WORKERS", 4)
 # 「混合模式」：创建任务后同步等待多久，超时才转成前端轮询。
