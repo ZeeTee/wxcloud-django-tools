@@ -31,7 +31,7 @@ os.environ["SQLITE_PATH"] = os.path.join(_workdir, "smoke.sqlite3")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "wxcloudrun.settings")
 os.environ["DJANGO_DEBUG"] = "false"
 os.environ["DEAI_ALLOW_ANONYMOUS"] = "true"
-os.environ["DEAI_DAILY_LIMIT"] = "2"
+os.environ["DEAI_DAILY_LIMIT_ANONYMOUS"] = "2"  # 把额度压到 2，方便验「耗尽」
 os.environ["LLM_API_KEY"] = "smoke-test-key-not-real"
 os.environ["LLM_BASE_URL"] = "http://127.0.0.1:9/v1"  # discard 端口，必定连不上
 os.environ["LLM_TIMEOUT"] = "2"
@@ -79,14 +79,9 @@ check(
     {k: hd.get(k) for k in ("phoneAuthReady", "phoneAuthMode")},
 )
 check(
-    "health 报告生效的两档额度（含 DEAI_DAILY_LIMIT 兜底）",
-    hd.get("quotaLimits") == {"anonymous": 2, "verified": 2},
+    "health 如实报告两档额度（未授权 2 / 已授权 10，互不干扰）",
+    hd.get("quotaLimits") == {"anonymous": 2, "verified": 10},
     hd.get("quotaLimits"),
-)
-check(
-    "health 说清楚是旧变量在覆盖，并列出被忽略的配置值",
-    hd.get("quotaLimitsOverride") == {"legacy": 2, "anonymous": 5, "verified": 10},
-    hd.get("quotaLimitsOverride"),
 )
 
 print("\n=== 1.1 Skill 列表 ===")

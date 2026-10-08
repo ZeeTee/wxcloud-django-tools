@@ -154,8 +154,8 @@ curl -s localhost:8080/api/count
 跑测试（**都不需要联网、不需要模型密钥**）：
 
 ```bash
-python3 -m unittest discover -s tests -t .   # 引擎 / skill / 额度 / 微信封装 / 请求日志单测，170 项
-python3 scripts/smoke_api.py                 # 接口端到端冒烟，88 项
+python3 -m unittest discover -s tests -t .   # 引擎 / skill / 额度 / 微信封装 / 请求日志单测，166 项
+python3 scripts/smoke_api.py                 # 接口端到端冒烟，87 项
 python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，32 项
 ```
 
@@ -315,7 +315,6 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `DEAI_MAX_INPUT_CHARS` | `5000` | 单次输入上限 |
 | `DEAI_DAILY_LIMIT_ANONYMOUS` | `5` | 未授权手机号用户每天的 AI 改写次数 |
 | `DEAI_DAILY_LIMIT_VERIFIED` | `10` | 已授权手机号用户每天的 AI 改写次数 |
-| `DEAI_DAILY_LIMIT` | `0` | 旧变量：>0 时两档都用它（兼容老部署） |
 | `WX_OPENAPI_ENABLED` | `true` | 用云调用（开放接口服务）调手机号接口，**免 access_token** |
 | `WX_OPENAPI_BASE` | `http://api.weixin.qq.com` | 云调用地址，**必须 HTTP**（见下方「手机号授权」） |
 | `WX_APPID` | 空 | 小程序 AppID。**建议配**：用于校验手机号回包的 `watermark.appid` |
@@ -387,7 +386,6 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `phoneAuthReady` | bool | 手机号授权能不能用（云调用模式只要控制台开关开了就是 `true`） |
 | `phoneAuthMode` | string | `cloudcall` = 走开放接口服务；`token` = 自管 access_token |
 | `quotaLimits` | object | `{anonymous, verified}`，**实际生效**的两档上限 |
-| `quotaLimitsOverride` | object \| null | 非 `null` 表示旧变量 `DEAI_DAILY_LIMIT` 正在覆盖两档，值是 `{legacy, anonymous, verified}`（后两个是**被忽略掉**的配置值） |
 
 **前端拿它做什么**：`phoneAuthReady` 决定要不要显示「授权手机号，每天 10 次」的入口。
 不显示比显示一个点了就报错的按钮好——手机号能力对个人主体小程序不开放。
@@ -1101,10 +1099,10 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 **上限是多少**：由 `DEAI_DAILY_LIMIT_ANONYMOUS`（默认 5）和 `DEAI_DAILY_LIMIT_VERIFIED`
 （默认 10）决定，走哪一档看 `deai_user_profile.verified_at`。
 
-> ⚠️ 旧变量 `DEAI_DAILY_LIMIT` 只要被配成 >0，**两档都会被它覆盖**（兼容老部署）。
-> 所以「明明配了 `..._ANONYMOUS=5`，接口却返回 20」这种情况，八成是环境变量里
-> 还留着 `DEAI_DAILY_LIMIT=20`。启动日志会有一条 WARNING 明说这件事，
-> `/api/health` 的 `quotaLimitsOverride` 也会是非 `null`。
+> ⚠️ 早期还有一个单一变量 `DEAI_DAILY_LIMIT`，它会**同时覆盖上面两档**，
+> 而且覆盖是静默的——配了 `..._ANONYMOUS=5` 却看到限额 20，只能靠猜。
+> **这个变量已彻底移除，代码里不再读它。** 环境变量里如果还留着，
+> 现在会被直接忽略，记得去控制台删掉，免得看日志时被误导。
 
 **唯一约束 `(openid, day)`** + `F()` 原子自增，保证并发下不丢计数。
 计数用「先读后判」有极小竞争窗口（见「已知限制」），作为免费额度够用。

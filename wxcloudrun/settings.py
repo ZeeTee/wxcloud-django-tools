@@ -171,13 +171,15 @@ LOGS_DIR = "/data/logs/"
 # 单次输入上限（字）
 DEAI_MAX_INPUT_CHARS = env_int("DEAI_MAX_INPUT_CHARS", 5000)
 # 每个用户每天可用的「AI 深度改写」次数，分两档：
-# 未登录（匿名）与已登录。规则层体检/改写不限次、不消耗额度。
-# 注意：匿名身份用的是云托管自动注入的 X-WX-OPENID，不是前端本地存储——
+# 未授权手机号 / 已授权手机号。规则层体检/改写不限次、不消耗额度。
+# 注意：身份用的是云托管自动注入的 X-WX-OPENID，不是前端本地存储——
 # 存本地的话用户清一次缓存就重置了，等于没有限制。
+#
+# ⚠️ 早期的单一变量 DEAI_DAILY_LIMIT 已**彻底废弃**：它会同时覆盖这两档，
+#    而且覆盖是静默的（配了 5 却看到 20，很难查到原因）。环境变量里如果还留着，
+#    现在会被直接忽略——记得去控制台删掉，免得看日志时被误导。
 DEAI_DAILY_LIMIT_ANONYMOUS = env_int("DEAI_DAILY_LIMIT_ANONYMOUS", 5)
 DEAI_DAILY_LIMIT_VERIFIED = env_int("DEAI_DAILY_LIMIT_VERIFIED", 10)
-# 旧变量，仅作为两个新变量的兜底（老部署只配了它时仍能跑）
-DEAI_DAILY_LIMIT = env_int("DEAI_DAILY_LIMIT", 0)
 
 # --- 微信小程序身份验证（手机号授权 -> getPhoneNumber）----------------------
 # 用于「授权手机号后提升额度」。两种调用方式，见 deai/wechat.py 的模块说明：

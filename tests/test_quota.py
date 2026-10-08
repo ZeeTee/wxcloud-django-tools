@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import unittest
-from contextlib import contextmanager
 from unittest.mock import patch
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "wxcloudrun.settings")
@@ -17,98 +16,70 @@ import django  # noqa: E402
 
 django.setup()
 
+from django.conf import settings  # noqa: E402
+
 from deai import quota, wechat  # noqa: E402
 
 
 class TestLimits(unittest.TestCase):
-    """两档额度：未登录 5 次，登录后 10 次。"""
+    """两档额度：未授权 5 次，已授权 10 次。
+
+    这里**只**认 DEAI_DAILY_LIMIT_ANONYMOUS / _VERIFIED 两个变量。
+    早期那个会把两档一起覆盖的 DEAI_DAILY_LIMIT 已彻底移除，
+    所以没有任何「旧变量优先」的用例了——那是刻意的。
+    """
 
     @staticmethod
-    def _limits_with(legacy: int, anonymous: int, verified: int) -> tuple[int, int]:
+    def _limits_with(anonymous: int, verified: int) -> tuple[int, int]:
         with (
-            patch.object(quota.settings, "DEAI_DAILY_LIMIT", legacy),
             patch.object(quota.settings, "DEAI_DAILY_LIMIT_ANONYMOUS", anonymous),
             patch.object(quota.settings, "DEAI_DAILY_LIMIT_VERIFIED", verified),
         ):
-            return quota._limits()
+            return quota.limits()
 
-    def test_two_tiers(self):
-        self.assertEqual(self._limits_with(0, 5, 10), (5, 10))
+    def test_default_two_tiers(self):
+        self.assertEqual(self._limits_with(5, 10), (5, 10))
 
     def test_custom_tiers(self):
-        self.assertEqual(self._limits_with(0, 3, 30), (3, 30))
+        self.assertEqual(self._limits_with(3, 30), (3, 30))
 
-    def test_legacy_variable_overrides_both(self):
-        """老部署只配了 DEAI_DAILY_LIMIT，升级后额度不该突然从 20 掉到 5。"""
-        self.assertEqual(self._limits_with(20, 5, 10), (20, 20))
+    def test_verified_can_be_lower_than_anonymous(self):
+        """不假设「已授权一定更高」——它只是另一个配置项。"""
+        self.assertEqual(self._limits_with(20, 10), (20, 10))
 
-    def test_legacy_zero_means_unset(self):
-        self.assertEqual(self._limits_with(0, 5, 10), (5, 10))
+    def test_limits_reads_live_settings(self):
+        """limits() 每次都读当前设置，不缓存——改了立刻生效，测试也好写。"""
+        with (
+            patch.object(quota.settings, "DEAI_DAILY_LIMIT_ANONYMOUS", 1),
+            patch.object(quota.settings, "DEAI_DAILY_LIMIT_VERIFIED", 2),
+        ):
+            self.assertEqual(quota.limits(), (1, 2))
+        with (
+            patch.object(quota.settings, "DEAI_DAILY_LIMIT_ANONYMOUS", 7),
+            patch.object(quota.settings, "DEAI_DAILY_LIMIT_VERIFIED", 8),
+        ):
+            self.assertEqual(quota.limits(), (7, 8))
 
 
-@contextmanager
-def _tiers(legacy: int, anonymous: int, verified: int):
-    """临时改三档额度配置。"""
-    with (
-        patch.object(quota.settings, "DEAI_DAILY_LIMIT", legacy),
-        patch.object(quota.settings, "DEAI_DAILY_LIMIT_ANONYMOUS", anonymous),
-        patch.object(quota.settings, "DEAI_DAILY_LIMIT_VERIFIED", verified),
-    ):
-        yield
+class TestNoLegacyVariable(unittest.TestCase):
+    """锁住「旧变量已彻底移除」这件事，防止以后又被加回来。
 
-
-class TestLegacyOverrideNotice(unittest.TestCase):
-    """旧变量 DEAI_DAILY_LIMIT 会静默覆盖两档，必须能被看见。
-
-    真实踩到的场景：环境变量里配了 DEAI_DAILY_LIMIT_ANONYMOUS=5，
-    但控制台还留着早期模板里的 DEAI_DAILY_LIMIT=20，于是 /api/quota
-    返回的限额是 20。光看接口只会觉得「配置没生效」，很难想到是旧变量。
+    它被移除是因为覆盖行为是静默的：环境变量里配了 ..._ANONYMOUS=5，
+    但控制台还留着旧变量 20，接口就返回 20，光看接口只能靠猜。
     """
 
-    def tearDown(self):
-        # 别把「已经喊过」的状态漏给别的用例
-        quota._legacy_warned = False
+    def test_setting_does_not_exist(self):
+        """settings 里已经没有这个属性。
 
-    def test_no_override_returns_none(self):
-        with _tiers(0, 5, 10):
-            self.assertIsNone(quota.legacy_override())
+        ``env_int`` 是在 import 时读环境的，所以「环境变量里配了也没用」
+        等价于「settings 里根本没这个键」——配了也没人读它。
+        """
+        with self.assertRaises(AttributeError):
+            settings.DEAI_DAILY_LIMIT  # noqa: B018
 
-    def test_override_reports_ignored_values(self):
-        """除了旧值，还要把「被忽略掉的那两个配置」一并报出来——
-        不然看到 legacy=20 也不知道自己配的 5 去哪了。"""
-        with _tiers(20, 5, 10):
-            info = quota.legacy_override()
-        self.assertEqual(info, {"legacy": 20, "anonymous": 5, "verified": 10})
-
-    def test_override_matches_effective_limits(self):
-        """legacy_override 说覆盖时，_limits() 必须真的返回被覆盖的值。"""
-        with _tiers(20, 5, 10):
-            self.assertEqual(quota.limits(), (20, 20))
-            self.assertIsNotNone(quota.legacy_override())
-
-    def test_warns_loudly_when_overriding(self):
-        with _tiers(20, 5, 10):
-            with self.assertLogs("deai.quota", level="WARNING") as captured:
-                quota.warn_legacy_override()
-            text = "\n".join(captured.output)
-        self.assertIn("DEAI_DAILY_LIMIT=20", text)
-        # 要明确指出「你配的那两个没生效」，并给出怎么修
-        self.assertIn("不生效", text)
-        self.assertIn("DEAI_DAILY_LIMIT_ANONYMOUS=5", text)
-        self.assertIn("DEAI_DAILY_LIMIT_VERIFIED=10", text)
-        self.assertIn("删掉", text)
-
-    def test_warns_only_once(self):
-        with _tiers(20, 5, 10):
-            with self.assertLogs("deai.quota", level="WARNING"):
-                quota.warn_legacy_override()
-            with self.assertNoLogs("deai.quota", level="WARNING"):
-                quota.warn_legacy_override()
-
-    def test_silent_when_not_overriding(self):
-        with _tiers(0, 5, 10):
-            with self.assertNoLogs("deai.quota", level="WARNING"):
-                quota.warn_legacy_override()
+    def test_no_legacy_helpers_left(self):
+        for name in ("legacy_override", "warn_legacy_override"):
+            self.assertFalse(hasattr(quota, name), f"quota.{name} 应该已经删掉")
 
 
 class TestWeChatLogin(unittest.TestCase):
