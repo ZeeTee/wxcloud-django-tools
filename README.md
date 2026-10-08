@@ -154,7 +154,7 @@ curl -s localhost:8080/api/count
 
 ```bash
 python3 -m unittest discover -s tests -t .   # 引擎 / skill / 额度 / 微信封装单测，143 项
-python3 scripts/smoke_api.py                 # 接口端到端冒烟，77 项
+python3 scripts/smoke_api.py                 # 接口端到端冒烟，87 项
 python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，32 项
 ```
 
@@ -324,6 +324,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `DEAI_WORKERS` | `4` | 后台改写线程数 |
 | `DEAI_SYNC_WAIT_SECONDS` | `12` | 混合模式：同步等待多久，超时才转轮询；`0` 为纯异步 |
 | `DEAI_ALLOW_ANONYMOUS` | =`DEBUG` | **生产必须 `false`**，否则公网可白嫖 |
+| `DEAI_DEBUG_HEADERS` | =`DEBUG` | 开启诊断接口 `/api/debug/headers`（回显身份头）。**排查完立刻关**，它会回显 openid |
 | `MYSQL_ADDRESS` | 空 | 配了用 MySQL，不配用 SQLite |
 | `MYSQL_ALLOW_57` | `false` | 允许连 MySQL 5.7（见下方说明，**建议升级而非长期开启**） |
 | `MYSQL_DATABASE` | `django_demo` | |
@@ -359,6 +360,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | 10 | POST | `/api/auth/login` | 手机号授权，额度从 5 次提升到 10 次 | body `phoneCode` | 否 |
 | 11 | GET/POST | `/api/count` | 模板原有的计数器示例（保持原格式，未改动） | POST body `action` | 否 |
 | 12 | GET | `/` | 模板原有的欢迎页 | 无 | 否 |
+| — | GET | `/api/debug/headers` | **诊断用，默认关闭**：回显云托管注入的身份头 | 无 | 否 |
 
 路径**不带尾斜杠**（`APPEND_SLASH=False`，避免 callContainer 遇到 301 重定向）。
 上表 12 行里，**前 10 个都有自己的详解小节**（`/api/count` 与 `/` 是模板原有、未改动）。
@@ -689,6 +691,52 @@ openid，仅本地开发）。
 `/api/quota` 返回 `verified`、`anonymousLimit`、`verifiedLimit`、`phoneMasked`，
 前端据此显示「授权手机号后每天可用 10 次」的引导。未授权额度用尽时，
 `QUOTA_EXCEEDED` 的错误文案里也会带上这个引导。
+
+#### 身份头从哪来，以及怎么确认它真的来了
+
+**先记住一件事：`X-WX-*` 是平台在服务端注入的，客户端根本不发送。**
+所以在微信开发者工具的 Network 面板里**永远看不到** `X-WX-OPENID`——那里显示的
+是你发出去的请求，不是容器收到的请求。官方原文（[登录流程优化](https://developers.weixin.qq.com/miniprogram/dev/wxcloudservice/wxcloudrun/src/quickstart/plan/login.html)）：
+
+> 在小程序端，通过 `wx.cloud.callContainer` 向你的云托管服务发起请求时，
+> **你的服务会在 header 中获得该请求用户的全部信息**。
+> **不需要 `wx.login` 登录，也不需要 code 换 session**。
+> 这个能力是**不带任何条件的**，小程序只要使用 `wx.cloud.callContainer`，
+> 云托管服务收到这个请求，信息就自然而然带入进来了。
+
+要确认「到底有没有注入、值是什么」，只能从容器侧看。开启诊断接口：
+
+```bash
+# 云托管控制台 → 服务设置 → 环境变量
+DEAI_DEBUG_HEADERS=true      # 排查完立刻删掉这一行
+```
+
+重新发布版本后，在小程序里请求（或直接用 curl 打公网域名）：
+
+```bash
+curl -s https://<你的域名>/api/debug/headers | python3 -m json.tool
+```
+
+返回里关心这几个字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `identity` | 业务侧最终认到的身份。正常应是 openid；`anonymous` 说明**什么都没注入** |
+| `hasOpenid` | `X-WX-OPENID` 在不在 |
+| `hasSource` | `X-WX-SOURCE` 在不在——**这是判断「是否真的来自微信链路」的官方依据** |
+| `headers` | 实际收到的头（只列 `X-WX-*` 等已知项） |
+| `metaKeys` | Django `request.META` 里的下划线形式，用于排查「注入了但框架读不到」 |
+
+**判断方法**：
+
+- 小程序里调 → `identity` 是 openid、`hasOpenid`/`hasSource` 都是 `true` → 一切正常
+- 公网 curl 调 → 三个都是空 / `anonymous` / `false` → **也正常**，这正是调用来源的区别
+- 小程序里调却拿到 `anonymous` → 平台没注入，检查是否真的走了 `callContainer`
+  （用 `wx.request` 打公网域名**不会**带任何微信信息）
+
+> ⚠️ `X-WX-SOURCE` 的存在与否是官方指定的「是否来自微信生态端」判据。
+> 当前代码只把它写进日志、**没有强制校验**，也就是说公网直连只要自带
+> `X-WX-OPENID` 就会被当真（见「已知限制」）。
 
 
 
@@ -1092,6 +1140,14 @@ POST /api/rewrite
 
 ## 九、已知限制
 
+- **`X-WX-SOURCE` 没有被强制校验**（安全相关的待办）。`deai/auth.py` 只读
+  `X-WX-OPENID` / `X-WX-FROM-OPENID`，不判断来源。官方文档说「保证调用来源是微信
+  生态端，**请判断 `X-WX-SOURCE` 头部是否存在**」，而这个头当前只进了日志。
+  影响：服务有公网域名（`https://<域名>/api/health` 用的就是它），如果平台**不剥离**
+  客户端自带的 `X-WX-*` 头，那么打公网域名并自带 `X-WX-OPENID` 就能冒充任意用户，
+  更糟的是**每次换一个假 openid 就能无限白嫖模型额度**——这恰恰是「按 openid 记额度」
+  要防的事。**尚未实测平台是否剥离该头**；彻底的做法是在云托管控制台关掉公网访问，
+  或在 `get_identity()` 里补上来源校验。
 - **容器重启会杀掉正在跑的改写线程**。任务状态已落库，超过
   `DEAI_TASK_TIMEOUT_SECONDS` 会判失败，用户重试即可。最小副本设为 0 时冷启动约几秒。
 - **多副本必须开 MySQL**，否则默认 SQLite 各副本不共享，轮询可能查不到任务。

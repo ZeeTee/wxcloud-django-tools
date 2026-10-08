@@ -205,6 +205,10 @@ WX_OPENAPI_BASE = (
 DEAI_TASK_TIMEOUT_SECONDS = env_int("DEAI_TASK_TIMEOUT_SECONDS", 120)
 # 是否允许没有 openid 的调用（本地开发用；生产必须保持 False）
 DEAI_ALLOW_ANONYMOUS = env_bool("DEAI_ALLOW_ANONYMOUS", DEBUG)
+# 诊断接口 /api/debug/headers：回显云托管注入的身份头。
+# 默认只在 DEBUG 下开。线上排查「X-WX-OPENID 到底有没有被注入」时可以临时设 true，
+# **查完立刻关掉**——它会回显 openid，属于敏感信息。
+DEAI_DEBUG_HEADERS = env_bool("DEAI_DEBUG_HEADERS", DEBUG)
 # 后台改写线程池并发数
 DEAI_WORKERS = env_int("DEAI_WORKERS", 4)
 # 「混合模式」：创建任务后同步等待多久，超时才转成前端轮询。

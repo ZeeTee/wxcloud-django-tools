@@ -91,6 +91,7 @@ d = r.json().get("data", {})
 slugs = [s.get("slug") for s in d.get("skills", [])]
 check("含 humanizer", "humanizer" in slugs, slugs)
 check("含 legacy 回退项", "legacy" in slugs, slugs)
+
 check("默认 skill 是 humanizer", d.get("default") == "humanizer", d.get("default"))
 check(
     "场景列表含全部四个场景",
@@ -105,7 +106,51 @@ check(
 humanizer = next((s for s in d.get("skills", []) if s.get("slug") == "humanizer"), {})
 check("humanizer 带版本号", bool(humanizer.get("version")), humanizer)
 
-print("\n=== 1.2 用量与余额 ===")
+print("\n=== 1.2 身份头诊断接口（/api/debug/headers）===")
+r = client.get("/api/debug/headers", **AUTH)
+check(
+    "默认关闭时按「接口不存在」处理（404，不暴露存在性）",
+    r.status_code == 404 and r.json()["error"]["code"] == "NOT_FOUND",
+    r.json(),
+)
+
+from django.conf import settings as dj_settings_dbg  # noqa: E402
+
+dj_settings_dbg.DEAI_DEBUG_HEADERS = True
+
+r = client.get(
+    "/api/debug/headers",
+    HTTP_X_WX_OPENID="o-test",
+    HTTP_X_WX_SOURCE="1",
+    HTTP_X_WX_FROM_OPENID="o-from",
+)
+d = r.json().get("data", {})
+check("打开后返回 200", r.status_code == 200, r.json())
+check("认到 X-WX-OPENID", d.get("identity") == "o-test" and d.get("hasOpenid") is True, d)
+check("hasSource 正确", d.get("hasSource") is True, d)
+check(
+    "回显了 X-WX-FROM-OPENID",
+    (d.get("headers") or {}).get("X-WX-FROM-OPENID") == "o-from",
+    d.get("headers"),
+)
+
+# 什么身份头都没有 = 公网直连的样子。这时更要能把现场打出来，
+# 所以这个接口故意不做身份校验（否则会被 401 挡住，什么都看不到）
+r = client.get("/api/debug/headers")
+d = r.json().get("data", {})
+check("无任何身份头时不报 401，而是照常回显", r.status_code == 200, r.status_code)
+check("此时 identity 回落到 anonymous", d.get("identity") == "anonymous", d)
+check("hasOpenid / hasSource 都是 false", not d.get("hasOpenid") and not d.get("hasSource"), d)
+
+# 资源复用：没有 X-WX-OPENID，只有 FROM 形式
+r = client.get("/api/debug/headers", HTTP_X_WX_FROM_OPENID="o-reuse")
+d = r.json().get("data", {})
+check("资源复用场景认到 X-WX-FROM-OPENID", d.get("identity") == "o-reuse" and d.get("hasFromOpenid") is True, d)
+check("此时 hasOpenid 为 false（证明确实是兜底读的）", d.get("hasOpenid") is False, d)
+
+dj_settings_dbg.DEAI_DEBUG_HEADERS = False
+
+print("\n=== 1.3 用量与余额 ===")
 r = client.get("/api/usage", **AUTH)
 check("GET /api/usage 返回 200", r.status_code == 200, r.status_code)
 d = r.json().get("data", {})
