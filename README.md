@@ -154,8 +154,8 @@ curl -s localhost:8080/api/count
 跑测试（**都不需要联网、不需要模型密钥**）：
 
 ```bash
-python3 -m unittest discover -s tests -t .   # 引擎 / skill / 额度 / 微信封装 / 请求日志单测，164 项
-python3 scripts/smoke_api.py                 # 接口端到端冒烟，87 项
+python3 -m unittest discover -s tests -t .   # 引擎 / skill / 额度 / 微信封装 / 请求日志单测，170 项
+python3 scripts/smoke_api.py                 # 接口端到端冒烟，88 项
 python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，32 项
 ```
 
@@ -386,7 +386,8 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `promptFingerprints` | object | `{slug: 指纹}`，用来核对线上跑的是哪一份 prompt |
 | `phoneAuthReady` | bool | 手机号授权能不能用（云调用模式只要控制台开关开了就是 `true`） |
 | `phoneAuthMode` | string | `cloudcall` = 走开放接口服务；`token` = 自管 access_token |
-| `quotaLimits` | object | `{anonymous, verified}`，**实际生效**的两档上限（已被旧变量 `DEAI_DAILY_LIMIT` 覆盖过） |
+| `quotaLimits` | object | `{anonymous, verified}`，**实际生效**的两档上限 |
+| `quotaLimitsOverride` | object \| null | 非 `null` 表示旧变量 `DEAI_DAILY_LIMIT` 正在覆盖两档，值是 `{legacy, anonymous, verified}`（后两个是**被忽略掉**的配置值） |
 
 **前端拿它做什么**：`phoneAuthReady` 决定要不要显示「授权手机号，每天 10 次」的入口。
 不显示比显示一个点了就报错的按钮好——手机号能力对个人主体小程序不开放。
@@ -1095,7 +1096,15 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 | `id` | bigint | 自增主键 | |
 | `openid` | varchar(64) | | 用户 |
 | `day` | date | | 日期。容器时区为 `Asia/Shanghai`，所以是北京时间当天 |
-| `used` | int | 默认 0 | 当日已用次数，上限由 `DEAI_DAILY_LIMIT` 控制（默认 20） |
+| `used` | int | 默认 0 | 当日已用次数。上限见下方 |
+
+**上限是多少**：由 `DEAI_DAILY_LIMIT_ANONYMOUS`（默认 5）和 `DEAI_DAILY_LIMIT_VERIFIED`
+（默认 10）决定，走哪一档看 `deai_user_profile.verified_at`。
+
+> ⚠️ 旧变量 `DEAI_DAILY_LIMIT` 只要被配成 >0，**两档都会被它覆盖**（兼容老部署）。
+> 所以「明明配了 `..._ANONYMOUS=5`，接口却返回 20」这种情况，八成是环境变量里
+> 还留着 `DEAI_DAILY_LIMIT=20`。启动日志会有一条 WARNING 明说这件事，
+> `/api/health` 的 `quotaLimitsOverride` 也会是非 `null`。
 
 **唯一约束 `(openid, day)`** + `F()` 原子自增，保证并发下不丢计数。
 计数用「先读后判」有极小竞争窗口（见「已知限制」），作为免费额度够用。

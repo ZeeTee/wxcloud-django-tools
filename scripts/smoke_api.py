@@ -83,6 +83,11 @@ check(
     hd.get("quotaLimits") == {"anonymous": 2, "verified": 2},
     hd.get("quotaLimits"),
 )
+check(
+    "health 说清楚是旧变量在覆盖，并列出被忽略的配置值",
+    hd.get("quotaLimitsOverride") == {"legacy": 2, "anonymous": 5, "verified": 10},
+    hd.get("quotaLimitsOverride"),
+)
 
 print("\n=== 1.1 Skill 列表 ===")
 r = client.get("/api/skills", **AUTH)

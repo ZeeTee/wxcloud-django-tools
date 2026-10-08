@@ -72,6 +72,7 @@ DOC_TOP = {
     "/api/health": {
         "status", "llmConfigured", "llm", "defaultSkill", "skills",
         "promptFingerprints", "phoneAuthReady", "phoneAuthMode", "quotaLimits",
+        "quotaLimitsOverride",
     },
     "/api/skills": {"default", "scenes", "intensities", "skills"},
     "/api/quota": {

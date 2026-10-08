@@ -211,6 +211,9 @@ def health(request):
             "quotaLimits": dict(
                 zip(("anonymous", "verified"), quota_service.limits())
             ),
+            # 旧变量 DEAI_DAILY_LIMIT 正在覆盖两档时，这里不是 null。
+            # 不写这个字段的话，看到 quotaLimits 是 {20,20} 只能靠猜。
+            "quotaLimitsOverride": quota_service.legacy_override(),
         }
     )
 

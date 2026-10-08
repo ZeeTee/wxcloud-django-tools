@@ -19,11 +19,15 @@ openid 未登录就有，所以匿名和登录**在身份上没有区别**；``w
 
 from __future__ import annotations
 
+import logging
+
 from django.conf import settings
 from django.db.models import F
 from django.utils import timezone
 
 from .models import QuotaUsage, UserProfile
+
+logger = logging.getLogger(__name__)
 
 
 class QuotaExceeded(Exception):
@@ -47,11 +51,58 @@ def _limits() -> tuple[int, int]:
 
     旧的 ``DEAI_DAILY_LIMIT`` 若被显式配置（>0），则两档都用它——
     这样老部署升级上来行为不变，不会突然把额度从 20 砍到 5。
+
+    ⚠️ 这个覆盖是**静默**的：配了 ``DEAI_DAILY_LIMIT_ANONYMOUS=5`` 但忘了删
+    旧变量时，``/api/quota`` 会返回 20，光看接口只会觉得「配置没生效」。
+    所以启动时会用 ``warn_legacy_override()`` 把它喊出来。
     """
     legacy = settings.DEAI_DAILY_LIMIT
     if legacy > 0:
         return legacy, legacy
     return settings.DEAI_DAILY_LIMIT_ANONYMOUS, settings.DEAI_DAILY_LIMIT_VERIFIED
+
+
+def legacy_override() -> dict | None:
+    """旧变量是否正在覆盖两档额度。
+
+    :returns: 没覆盖返回 ``None``；覆盖时返回 ``{legacy, anonymous, verified}``，
+              其中 ``anonymous`` / ``verified`` 是**被忽略掉**的两个配置值。
+    """
+    legacy = settings.DEAI_DAILY_LIMIT
+    if legacy <= 0:
+        return None
+    return {
+        "legacy": legacy,
+        "anonymous": settings.DEAI_DAILY_LIMIT_ANONYMOUS,
+        "verified": settings.DEAI_DAILY_LIMIT_VERIFIED,
+    }
+
+
+_legacy_warned = False
+
+
+def warn_legacy_override() -> None:
+    """启动时把「旧变量正在覆盖两档额度」喊进日志（全进程只喊一次）。
+
+    Django 的 ``AppConfig.ready()`` 会调它，所以容器一起来就能在服务日志里看到，
+    不用等到有人去调 ``/api/quota`` 才发现限额不对。
+    """
+    global _legacy_warned
+    if _legacy_warned:
+        return
+    info = legacy_override()
+    if info is None:
+        return
+    _legacy_warned = True
+    logger.warning(
+        "检测到旧环境变量 DEAI_DAILY_LIMIT=%s：未授权/已授权两档额度都被它覆盖成 %s 次，"
+        "而 DEAI_DAILY_LIMIT_ANONYMOUS=%s 与 DEAI_DAILY_LIMIT_VERIFIED=%s 当前**不生效**。"
+        "想用两档额度，请到「服务设置 → 环境变量」把 DEAI_DAILY_LIMIT 删掉。",
+        info["legacy"],
+        info["legacy"],
+        info["anonymous"],
+        info["verified"],
+    )
 
 
 def limits() -> tuple[int, int]:
