@@ -48,6 +48,7 @@ import django  # noqa: E402
 
 django.setup()
 
+from django.conf import settings  # noqa: E402
 from django.core.management import call_command  # noqa: E402
 from django.test import Client  # noqa: E402
 
@@ -71,12 +72,11 @@ def check(name: str, condition: bool, extra: object = "") -> None:
 DOC_TOP = {
     "/api/health": {
         "status", "llmConfigured", "llm", "defaultSkill", "skills",
-        "promptFingerprints", "phoneAuthReady", "phoneAuthMode", "quotaLimits",
+        "promptFingerprints", "phoneAuthReady", "phoneAuthMode", "quotaLimit",
     },
     "/api/skills": {"default", "scenes", "intensities", "skills"},
     "/api/quota": {
-        "used", "limit", "remaining", "verified",
-        "anonymousLimit", "verifiedLimit", "phoneMasked",
+        "used", "limit", "remaining", "resetsAt", "verified", "phoneMasked",
     },
     "/api/usage": {"balance", "balanceError", "today"},
     "/api/feedback/summary": {
@@ -143,9 +143,9 @@ check(
     f"差集：{set((health.get('llm') or {}).keys()) ^ DOC_HEALTH_LLM}",
 )
 check(
-    "health.quotaLimits = {anonymous, verified}",
-    set((health.get("quotaLimits") or {}).keys()) == {"anonymous", "verified"},
-    health.get("quotaLimits"),
+    "health.quotaLimit 是正整数",
+    isinstance(health.get("quotaLimit"), int) and health["quotaLimit"] > 0,
+    health.get("quotaLimit"),
 )
 check(
     "health.phoneAuthMode ∈ {cloudcall, token}",
@@ -165,7 +165,16 @@ check("skills.default 是字符串", isinstance(skills.get("default"), str), ski
 print("\n=== 3. /api/quota 的语义（README 里逐条写过的）===")
 quota = get("/api/quota")["data"]
 check("remaining == max(0, limit - used)", quota["remaining"] == max(0, quota["limit"] - quota["used"]), quota)
-check("未授权时 limit == anonymousLimit", quota["limit"] == quota["anonymousLimit"], quota)
+check(
+    "limit == 配置的 DEAI_DAILY_QUOTA（不再是按用户算出来的档位）",
+    quota["limit"] == settings.DEAI_DAILY_QUOTA,
+    {"返回": quota["limit"], "配置": settings.DEAI_DAILY_QUOTA},
+)
+check(
+    "resetsAt 在未来 24 小时内（北京时间 0 点）",
+    quota["resetsAt"].endswith("00:00:00") and len(quota["resetsAt"]) == 19,
+    quota["resetsAt"],
+)
 check("未授权时 phoneMasked 为空串", quota["phoneMasked"] == "", repr(quota["phoneMasked"]))
 check("初始 used == 0", quota["used"] == 0, quota["used"])
 check("remaining == limit（还没用过）", quota["remaining"] == quota["limit"], quota)

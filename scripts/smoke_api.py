@@ -31,7 +31,7 @@ os.environ["SQLITE_PATH"] = os.path.join(_workdir, "smoke.sqlite3")
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "wxcloudrun.settings")
 os.environ["DJANGO_DEBUG"] = "false"
 os.environ["DEAI_ALLOW_ANONYMOUS"] = "true"
-os.environ["DEAI_DAILY_LIMIT_ANONYMOUS"] = "2"  # 把额度压到 2，方便验「耗尽」
+os.environ["DEAI_DAILY_QUOTA"] = "2"  # 把次数压到 2，方便验「耗尽」
 os.environ["LLM_API_KEY"] = "smoke-test-key-not-real"
 os.environ["LLM_BASE_URL"] = "http://127.0.0.1:9/v1"  # discard 端口，必定连不上
 os.environ["LLM_TIMEOUT"] = "2"
@@ -79,9 +79,9 @@ check(
     {k: hd.get(k) for k in ("phoneAuthReady", "phoneAuthMode")},
 )
 check(
-    "health 如实报告两档额度（未授权 2 / 已授权 10，互不干扰）",
-    hd.get("quotaLimits") == {"anonymous": 2, "verified": 10},
-    hd.get("quotaLimits"),
+    "health 如实报告每人每天的次数上限",
+    hd.get("quotaLimit") == 2,
+    hd.get("quotaLimit"),
 )
 
 print("\n=== 1.1 Skill 列表 ===")
@@ -224,14 +224,24 @@ r = client.get("/api/quota", **AUTH)
 q = r.json()["data"]
 check("初始额度 used=0 limit=2", q["used"] == 0 and q["limit"] == 2 and q["remaining"] == 2, q)
 check(
-    "返回双档信息（verified / anonymousLimit / verifiedLimit）",
-    {"verified", "anonymousLimit", "verifiedLimit"} <= set(q),
+    "返回剩余次数与重置时刻（used/limit/remaining/resetsAt）",
+    {"used", "limit", "remaining", "resetsAt"} <= set(q),
     q,
 )
-check("未登录时 verified=false", q.get("verified") is False, q)
+check(
+    "不再有分档字段（anonymousLimit / verifiedLimit 已移除）",
+    "anonymousLimit" not in q and "verifiedLimit" not in q,
+    sorted(q.keys()),
+)
+check("未授权时 verified=false", q.get("verified") is False, q)
+check(
+    "resetsAt 是「YYYY-MM-DD HH:MM:SS」格式",
+    len(str(q.get("resetsAt", ""))) == 19 and str(q.get("resetsAt")).endswith("00:00:00"),
+    q.get("resetsAt"),
+)
 
-print("\n=== 4.5 手机号授权（提升额度）===")
-# 用独立的 openid，避免影响第 7 节「未授权额度耗尽」的断言
+print("\n=== 4.5 手机号授权（不再影响次数）===")
+# 用独立的 openid，避免影响第 7 节「次数耗尽」的断言
 PHONE_AUTH = {"HTTP_X_WX_OPENID": "smoke-phone-openid"}
 r = post_json("/api/auth/login", {}, **PHONE_AUTH)
 check(
@@ -265,12 +275,26 @@ check(
     r.content.decode("utf-8"),
 )
 check("授权时把 phoneCode 透传给微信", phone_mock.call_args.args[0] == "fake-phone-code", phone_mock.call_args)
-check("quota 里档位已切换", d.get("quota", {}).get("verified") is True, d.get("quota"))
+check("quota 里 verified 已置位", d.get("quota", {}).get("verified") is True, d.get("quota"))
 
 r = client.get("/api/quota", **PHONE_AUTH)
 qd = r.json().get("data", {})
-check("再查额度仍是已授权", qd.get("verified") is True, qd)
+check("再查仍是已授权", qd.get("verified") is True, qd)
 check("quota 带回打码手机号", qd.get("phoneMasked") == "138****8000", qd)
+
+# 关键：手机号授权**不再影响次数**。验证过的用户和不验证的用户上限必须一样，
+# 这正是这次从「两档」改成「统一 N 次」的核心。
+anon_q = client.get("/api/quota", **AUTH).json()["data"]
+check(
+    "手机号授权不改变次数上限（与未授权用户一致）",
+    qd.get("limit") == anon_q.get("limit"),
+    {"已授权": qd.get("limit"), "未授权": anon_q.get("limit")},
+)
+check(
+    "授权前后已用次数也不变（不会因为授权被重置）",
+    qd.get("used") == 0,
+    qd,
+)
 
 with patch.object(
     wechat_mod,
@@ -405,8 +429,8 @@ for attempt in range(1, 6):
             body,
         )
         check(
-            "额度耗尽的错误文案里带授权引导",
-            "授权手机号" in body.get("error", {}).get("message", ""),
+            "次数耗尽的错误文案说清上限和恢复时间",
+            all(k in body.get("error", {}).get("message", "") for k in ("2 次", "明天", "恢复")),
             body.get("error", {}).get("message"),
         )
         hit_limit = True

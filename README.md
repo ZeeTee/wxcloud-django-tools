@@ -98,7 +98,7 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 │   ├── views.py                10 个接口，统一响应信封
 │   ├── models.py               RewriteTask / Feedback / UserProfile / WxAccessToken / QuotaUsage
 │   ├── auth.py                 从云托管请求头取 openid
-│   ├── quota.py                每日额度（分未授权 / 已授权两档）
+│   ├── quota.py                每人每天的使用次数（按 openid 计）
 │   ├── wechat.py               手机号授权（云调用 / 自管 token）
 │   ├── tasks.py                后台线程池 + 超时判失败
 │   └── middleware.py           请求日志中间件（参数 + 身份头 + IP）
@@ -154,9 +154,9 @@ curl -s localhost:8080/api/count
 跑测试（**都不需要联网、不需要模型密钥**）：
 
 ```bash
-python3 -m unittest discover -s tests -t .   # 引擎 / skill / 额度 / 微信封装 / 请求日志单测，166 项
-python3 scripts/smoke_api.py                 # 接口端到端冒烟，87 项
-python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，32 项
+python3 -m unittest discover -s tests -t .   # 引擎 / skill / 使用次数 / 微信封装 / 请求日志单测，170 项
+python3 scripts/smoke_api.py                 # 接口端到端冒烟，91 项
+python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，33 项
 ```
 
 `smoke_api.py` 会故意把模型地址指向一个连不上的端口，从而把「建任务 → 后台线程 →
@@ -250,7 +250,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
    想确认建表结果，可在容器内执行：`python scripts/init_db.py --check-only`
    （该脚本也能手动建库建表，见第三节）。
 
-6. **开手机号授权（想让用户从 5 次提到 10 次才需要）**：控制台 → 云调用：
+6. **开手机号授权（可选，不再影响使用次数）**：控制台 → 云调用：
 
    1. 打开「**开放接口服务**」开关；
    2. 在「微信令牌权限配置」里加路径白名单：`/wxa/business/getuserphonenumber`
@@ -313,8 +313,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `DJANGO_DEBUG` | `false` | |
 | `DJANGO_ALLOWED_HOSTS` | `*` | 云托管 Host 不固定，默认放开 |
 | `DEAI_MAX_INPUT_CHARS` | `5000` | 单次输入上限 |
-| `DEAI_DAILY_LIMIT_ANONYMOUS` | `5` | 未授权手机号用户每天的 AI 改写次数 |
-| `DEAI_DAILY_LIMIT_VERIFIED` | `10` | 已授权手机号用户每天的 AI 改写次数 |
+| `DEAI_DAILY_QUOTA` | `10` | **每人每天**的 AI 改写次数，按 openid 计，北京时间 0 点重置 |
 | `WX_OPENAPI_ENABLED` | `true` | 用云调用（开放接口服务）调手机号接口，**免 access_token** |
 | `WX_OPENAPI_BASE` | `http://api.weixin.qq.com` | 云调用地址，**必须 HTTP**（见下方「手机号授权」） |
 | `WX_APPID` | 空 | 小程序 AppID。**建议配**：用于校验手机号回包的 `watermark.appid` |
@@ -359,7 +358,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | 7 | GET | `/api/task/<taskId>` | 取改写结果（轮询或补查） | 路径 `taskId` | 否 |
 | 8 | POST | `/api/feedback` | 对某次改写结果评价 | body `taskId` `rating` `reason` `comment` | 否 |
 | 9 | GET | `/api/feedback/summary` | 当前用户的评价统计 | 无 | 否 |
-| 10 | POST | `/api/auth/login` | 手机号授权，额度从 5 次提升到 10 次 | body `phoneCode` | 否 |
+| 10 | POST | `/api/auth/login` | 手机号授权（记录手机号，**不影响使用次数**） | body `phoneCode` | 否 |
 | 11 | GET/POST | `/api/count` | 模板原有的计数器示例（保持原格式，未改动） | POST body `action` | 否 |
 | 12 | GET | `/` | 模板原有的欢迎页 | 无 | 否 |
 | — | GET | `/api/debug/headers` | **诊断用，默认关闭**：回显云托管注入的身份头 | 无 | 否 |
@@ -385,10 +384,11 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `promptFingerprints` | object | `{slug: 指纹}`，用来核对线上跑的是哪一份 prompt |
 | `phoneAuthReady` | bool | 手机号授权能不能用（云调用模式只要控制台开关开了就是 `true`） |
 | `phoneAuthMode` | string | `cloudcall` = 走开放接口服务；`token` = 自管 access_token |
-| `quotaLimits` | object | `{anonymous, verified}`，**实际生效**的两档上限 |
+| `quotaLimit` | int | 每人每天的 AI 改写次数上限（`DEAI_DAILY_QUOTA`，默认 10） |
 
-**前端拿它做什么**：`phoneAuthReady` 决定要不要显示「授权手机号，每天 10 次」的入口。
-不显示比显示一个点了就报错的按钮好——手机号能力对个人主体小程序不开放。
+**前端拿它做什么**：`llmConfigured` 判断深度改写能不能用、`phoneAuthReady` 判断手机号
+能力能否调用（它对个人主体小程序不开放，别显示一个点了就报错的按钮）。
+`quotaLimit` 可以提前渲染「每天 N 次」而不用等 `/api/quota`。
 
 #### GET /api/skills —— 可用的 skill / 场景 / 强度
 
@@ -422,38 +422,37 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `used` | int | 今天已用掉几次 |
-| `limit` | int | 当前档位的每日上限（`anonymousLimit` 或 `verifiedLimit`） |
+| `limit` | int | 每人每天的次数上限（`DEAI_DAILY_QUOTA`，默认 `10`） |
 | `remaining` | int | 还剩几次，等于 `max(0, limit - used)` |
-| `verified` | bool | 是否已通过手机号授权（决定走哪一档） |
-| `anonymousLimit` | int | 未授权档上限，默认 `5` |
-| `verifiedLimit` | int | 已授权档上限，默认 `10` |
-| `phoneMasked` | string | 已授权时是打码手机号如 `138****8000`；未授权为空串 |
+| `resetsAt` | string | 下次归零的时刻，北京时间 0 点，格式 `YYYY-MM-DD HH:MM:SS` |
+| `verified` | bool | 是否做过手机号授权。**只用于回显，不影响次数** |
+| `phoneMasked` | string | 做过授权时是打码手机号如 `138****8000`；否则空串 |
 
 ```json
 {
   "ok": true,
   "data": {
-    "used": 2, "limit": 5, "remaining": 3,
-    "verified": false, "anonymousLimit": 5, "verifiedLimit": 10,
-    "phoneMasked": ""
+    "used": 2, "limit": 10, "remaining": 8,
+    "resetsAt": "2026-10-09 00:00:00",
+    "verified": false, "phoneMasked": ""
   }
 }
 ```
 
 **几个容易误解的点**：
 
-- **这个接口只读，不消耗额度。** 只有 `POST /api/rewrite` 才扣次数；
-  `/api/analyze` 和规则层完全不限次。
-- **`limit` 是按当前档位算出来的，不是固定值。** 用户授权成功后，同一个 `used`
-  会立刻对应更大的 `limit`——前端不用自己算，重新调一次这个接口即可。
-- **授权后已用次数不会清零。** `QuotaUsage` 按 `openid + 日期` 记一份、**不分档位**，
-  所以「先用完 5 次再授权」拿到的是 10 − 5 = 5 次，不是 15 次。这是有意的，
-  否则「先匿名用完再登录」就成了刷额度。
-- **计数按北京时间自然日恢复。** 容器时区已在 Dockerfile 里设为 `Asia/Shanghai`。
+- **次数按 openid 计，每人每天固定 `limit` 次，不分档。** 只要请求里带上了云托管注入的
+  `X-WX-OPENID`（小程序里用 `callContainer` 就一定带，不需要用户做任何事），
+  就享有完整的 10 次。手机号授权**不会**让次数变多。
+- **这个接口只读，不消耗次数。** 只有 `POST /api/rewrite` 才扣；`/api/analyze`
+  和规则层完全不限次。
+- **按北京时间自然日归零，不需要定时任务。** `QuotaUsage` 按 `(openid, 日期)` 分桶，
+  日期取北京时间当天，0 点一过自然是新的一行、从 0 开始。容器时区已在 Dockerfile
+  里设为 `Asia/Shanghai`。`resetsAt` 就是下一个 0 点。
 - **只统计 AI 深度改写**，规则层体检/秒改不计数。
 
-额度用尽时 `POST /api/rewrite` 返回 `429 / QUOTA_EXCEEDED`，文案里已经带了引导
-（未授权时提示「授权手机号后每天可用 10 次」）。
+次数用尽时 `POST /api/rewrite` 返回 `429 / QUOTA_EXCEEDED`，文案是
+「今天的 N 次 AI 改写额度用完了，明天 0 点自动恢复」。
 
 #### GET /api/usage —— 账户余额 + 今日用量
 
@@ -589,7 +588,7 @@ other         其他
 | `badReasons` | array | `[{reason, count}]`，按数量倒序 |
 | `availableReasons` | string[] | 可选差评原因枚举，**前端应从这里读，别写死** |
 
-#### POST /api/auth/login —— 手机号授权并提升额度
+#### POST /api/auth/login —— 手机号授权（可选）
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
@@ -599,7 +598,7 @@ other         其他
 前端写法：
 
 ```html
-<button open-type="getPhoneNumber" bindgetphonenumber="onPhone">授权手机号，每天 10 次</button>
+<button open-type="getPhoneNumber" bindgetphonenumber="onPhone">授权手机号</button>
 ```
 
 ```js
@@ -635,15 +634,17 @@ openid，仅本地开发）。
 | 资质 | 只对「**非个人主体，且完成了认证**的小程序」开放。个人主体调不通，返回 `48001` |
 | 计费 | **每次成功调用 0.03 元**（2023-08-28 起）。每个账号 1000 次体验额度，正式/体验/开发版共用，用完要在「付费管理」买资源包 |
 
-所以「授权后每天 10 次」不要做成诱导所有人狂点的弹窗，正常放一个入口即可；
+⚠️ 既然次数已经统一成 10 次，**这个能力现在不带来任何额度收益，却要按次付费**。
+除非你确实需要手机号（做账号体系、防刷、跨端识别），否则**不要在界面上放这个入口**。
+前端调它之前先看 `/api/health` 的 `phoneAuthReady`，没就绪就别显示按钮。
 额度耗尽时前端按钮回调里会拿到 `errno === 1400001`（此时不产生 code、不计费）。
 
-**为什么用手机号而不是 `wx.login()`**
+**它唯一的独特价值**
 
-`openid` 是云托管**自动注入**的，未登录也有；`wx.login()` 换 openid 更是什么都证明不了——
-谁都能触发，微信也不做任何校验，拿它当「登录」等于把 10 次额度白送。
-手机号授权是**用户真的点了按钮、微信背书**的一次性 code（5 分钟有效、只能消费一次），
-才有区分度。
+`openid` 是云托管**自动注入**的，`wx.login()` 换 openid 也是谁都能触发、
+微信不做任何校验——两者都证明不了「用户主动做过什么」。手机号授权是**用户真的点了
+按钮、微信背书**的一次性 code（5 分钟有效、只能消费一次），是这套体系里唯一
+「可验证的用户主动动作」。以后要做真正的账号体系时它才用得上，所以接口没删。
 
 **安全要点**
 
@@ -672,27 +673,34 @@ openid，仅本地开发）。
 > 改走自管 access_token（需要配 `WX_SECRET`），token 缓存在
 > `deai_wx_access_token` 表里给多副本共享。
 
-### 用户身份与额度
+### 用户身份与使用次数
 
-| 状态 | 身份来源 | 每日额度 | 用户要做什么 |
-| --- | --- | --- | --- |
-| 未授权 | `X-WX-OPENID`（云托管自动注入） | **5 次** | **什么都不用做** |
-| 已授权手机号 | 同一个 openid | **10 次** | 点「授权手机号」按钮一次 |
+**规则很简单：拿到 openid 就是每人每天 10 次，不需要用户做任何事。**
 
-**一个容易误解的点**：微信小程序里 `openid` 是**静默获取**的，不需要任何授权弹窗，
-云托管会自动把它注入到 `X-WX-OPENID` 请求头。所以**「不登录也能唯一区分用户」这件事
-现在就已经做到了**，不需要额外方案，也不需要前端本地存储。
+| 身份来源 | 每日次数 | 用户要做什么 |
+| --- | --- | --- |
+| `X-WX-OPENID`（云托管自动注入） | `DEAI_DAILY_QUOTA`，默认 **10 次** | **什么都不用做** |
 
-但反过来，这也意味着「未登录」和「已登录」**在身份上没有本质区别**——要区分两档额度，
-必须有一个用户主动做过、且微信背书的动作，这就是手机号授权的作用。
+**一个容易误解的点**：微信小程序里 `openid` 是**静默获取**的，不需要授权弹窗，
+也不必调 `wx.login()`。云托管在服务端把 `X-WX-OPENID` 注入到请求头里，
+所以**「不登录也能唯一区分用户」这件事天然成立**，不需要额外方案。
 
-**为什么匿名额度也记在后端**：有人会想「未登录就用前端本地存储计数」。但那样用户
+**为什么记在后端**：有人会想「就用前端本地存储计数」。但那样用户
 **清一次小程序缓存次数就归零**，等于没有限制，而且前端数据可被篡改。用 openid 记在
 后端，清缓存重置不了（要换微信号才行），代价只是一次数据库查询。
 
-`/api/quota` 返回 `verified`、`anonymousLimit`、`verifiedLimit`、`phoneMasked`，
-前端据此显示「授权手机号后每天可用 10 次」的引导。未授权额度用尽时，
-`QUOTA_EXCEEDED` 的错误文案里也会带上这个引导。
+**为什么不再分档**：这里曾经分「未授权 5 次 / 授权手机号后 10 次」。现在统一成 10 次，
+因为手机号授权的两项成本都不低：
+
+- **要花钱**：每次成功调用 0.03 元，每账号只有 1000 次体验额度；
+- **有门槛**：只对「非个人主体且已认证」的小程序开放，个人主体根本调不通。
+
+为了一次额度差异付这些成本不划算。`/api/auth/login` 仍然保留（见下），
+但它现在**只记录手机号，不影响次数**。
+
+**为什么不会漏重置**：次数按 `(openid, 北京时间日期)` 分桶存在 `QuotaUsage` 里，
+0 点一过自然是新的一行、从 0 开始。不依赖任何定时任务，也就没有「任务没跑成、
+次数不清零」的风险。`/api/quota` 的 `resetsAt` 会告诉你下次归零的确切时刻。
 
 #### 身份头从哪来，以及怎么确认它真的来了
 
@@ -1096,13 +1104,12 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 | `day` | date | | 日期。容器时区为 `Asia/Shanghai`，所以是北京时间当天 |
 | `used` | int | 默认 0 | 当日已用次数。上限见下方 |
 
-**上限是多少**：由 `DEAI_DAILY_LIMIT_ANONYMOUS`（默认 5）和 `DEAI_DAILY_LIMIT_VERIFIED`
-（默认 10）决定，走哪一档看 `deai_user_profile.verified_at`。
+**上限是多少**：`DEAI_DAILY_QUOTA`（默认 10）。**每个 openid 一视同仁**，
+不区分是否做过手机号授权。
 
-> ⚠️ 早期还有一个单一变量 `DEAI_DAILY_LIMIT`，它会**同时覆盖上面两档**，
-> 而且覆盖是静默的——配了 `..._ANONYMOUS=5` 却看到限额 20，只能靠猜。
-> **这个变量已彻底移除，代码里不再读它。** 环境变量里如果还留着，
-> 现在会被直接忽略，记得去控制台删掉，免得看日志时被误导。
+> ⚠️ 两个已经废弃的变量名，别再用了：`DEAI_DAILY_LIMIT`（一配就同时覆盖两档，
+> 而且是静默的）和两档时代的 `DEAI_DAILY_LIMIT_ANONYMOUS` / `_VERIFIED`。
+> 代码里已经不读它们，环境变量里如果还留着会被直接忽略——建议去控制台删掉。
 
 **唯一约束 `(openid, day)`** + `F()` 原子自增，保证并发下不丢计数。
 计数用「先读后判」有极小竞争窗口（见「已知限制」），作为免费额度够用。
@@ -1110,9 +1117,13 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 > 这张表是**最不能丢**的：容器缩容重启后如果归零，配额限制就形同虚设。
 > 这也是必须用 MySQL 而不是容器内 SQLite 的主要原因。
 
-### 7.4 `deai_user_profile` —— 用户验证状态
+### 7.4 `deai_user_profile` —— 用户手机号记录
 
-决定该用户走未授权档（5 次）还是已授权档（10 次）。openid 直接做主键，一个用户一行。
+> 它**不再影响使用次数**（现在是每人每天统一 `DEAI_DAILY_QUOTA` 次）。
+> 现在只是记录「这个 openid 做过手机号授权、手机号是多少」，供以后做账号体系用。
+> 没有任何行也完全不影响功能——次数只看 `deai_quota_usage`。
+
+openid 直接做主键，一个用户一行。
 
 | 字段 | 类型 | 取值 / 默认 | 含义 |
 | --- | --- | --- | --- |
@@ -1121,12 +1132,12 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 | `phone_masked` | varchar(20) | 空串 | 打码手机号，如 `138****8000`。**库里不存完整号码** |
 | `phone_hash` | varchar(64) | 空串，索引 | 手机号的 HMAC 指纹（`SECRET_KEY` 加盐）。可比较、不可反查 |
 | `login_method` | varchar(20) | 空串 | `phone` = 手机号授权；`code2session` = 旧登录方式（弱验证） |
-| `verified_at` | datetime(6) | 可空，索引 | 最近一次成功验证的时间。**为空 = 从未授权 = 走匿名额度** |
+| `verified_at` | datetime(6) | 可空，索引 | 最近一次成功授权的时间。为空 = 没做过手机号授权（**不影响次数**）|
 | `created_at` | datetime(6) | 自动写入 | |
 | `updated_at` | datetime(6) | 自动更新 | |
 
-> 注意 `QuotaUsage` 里**不区分**未授权与已授权——额度计数只有一份，档位由这张表决定。
-> 这样用户授权后已用的次数不会清零（否则「先匿名用完 5 次再授权拿 10 次」会变成 15 次）。
+> 注意 `QuotaUsage` 与这张表**完全解耦**：次数只看 openid 和日期，不看有没有手机号。
+> 所以做没做过手机号授权，已用次数都不会被重置。
 
 ### 7.5 `deai_wx_access_token` —— 微信 access_token 缓存
 
