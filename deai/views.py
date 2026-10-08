@@ -172,6 +172,10 @@ def _task_payload(task: RewriteTask) -> dict:
                 round(task.cache_hit_tokens / task.prompt_tokens, 4) if task.prompt_tokens else 0
             ),
             "costCNY": float(task.cost_cny or 0),
+            # costCNY 的来源：provider = 供应商上报（可信）；
+            # local_table = 按 LLM_PRICE_* 本地估算（仅供参考）。
+            # 空串 = 老数据。前端想标「估算值」就靠它。
+            "costSource": task.cost_source or "",
         }
         try:
             payload["warnings"] = json.loads(task.warnings or "[]")
@@ -204,13 +208,12 @@ def health(request):
             "defaultSkill": DEFAULT_SKILL,
             "skills": [s.slug for s in registry.list()] + list(EXTRA_SKILLS),
             "promptFingerprints": fingerprints,
-            # 手机号授权能不能用——前端据此决定要不要显示「授权后每天 10 次」的按钮。
-            # 云调用模式只要控制台开关开了就算就绪，不需要 AppSecret。
+            # 手机号授权能不能用。注意它**不再影响使用次数**（统一 10 次），
+            # 保留这个探针只是为了别的场景要用手机号时能提前知道能不能调。
             "phoneAuthReady": wechat.phone_ready(),
             "phoneAuthMode": "cloudcall" if settings.WX_OPENAPI_ENABLED else "token",
-            "quotaLimits": dict(
-                zip(("anonymous", "verified"), quota_service.limits())
-            ),
+            # 每人每天的使用次数上限（按 openid 计，北京时间 0 点重置）
+            "quotaLimit": quota_service.daily_limit(),
         }
     )
 
@@ -473,10 +476,11 @@ def task_status(request, task_id: str):
 
 @api("GET")
 def quota(request):
-    """查询今日剩余额度。
+    """查询今日剩余次数。
 
-    返回里带 ``verified`` / ``anonymousLimit`` / ``verifiedLimit``，
-    前端据此显示「授权手机号后每天可用 N 次」的引导。
+    返回 ``used`` / ``limit`` / ``remaining`` / ``resetsAt``，外加用户状态
+    ``verified`` / ``phoneMasked``。**次数按 openid 计，每人每天固定 N 次**
+    （``DEAI_DAILY_QUOTA``，默认 10），不分档、与手机号授权无关。
     """
     identity, err = _identity_or_error(request)
     if err:
@@ -486,7 +490,15 @@ def quota(request):
 
 @api("POST")
 def login(request):
-    """手机号授权，把额度从匿名档（5 次）提升到已授权档（10 次）。
+    """手机号授权。
+
+    ⚠️ **它不再影响使用次数**。次数已经统一成「拿到 openid 就每天 10 次」，
+    手机号授权现在只是记录一下用户手机号，供后续功能使用。
+
+    保留这个接口的原因：手机号是唯一一个「用户主动做过、且微信背书」的
+    身份动作（openid 是云托管无条件注入的，``wx.login()`` 谁都能触发、
+    微信也不校验）。以后要做真正的账号体系、跨端识别、或者防刷时，
+    它还是那个可用的抓手，所以没删。
 
     前端怎么调
     ----------
@@ -495,11 +507,6 @@ def login(request):
     POST 给这个接口::
 
         { "phoneCode": "e.detail.code" }
-
-    **为什么要用手机号而不是 ``wx.login()``**：openid 是云托管自动注入的，
-    未登录也有，``wx.login()`` 换 openid 证明不了任何用户主动行为
-    （谁都能触发、微信也不校验），拿它当「登录」等于把 10 次额度白送。
-    手机号授权是用户真的点了按钮、微信背书的一次性 code，才有区分度。
 
     安全要点
     --------
@@ -532,7 +539,7 @@ def login(request):
 
 
 def _login_by_phone(identity: str, phone_code: str):
-    """手机号授权路径：正经的额度升级方式。"""
+    """手机号授权路径。只记录手机号，不影响使用次数。"""
     if not wechat.phone_ready():
         return fail(
             "WX_NOT_CONFIGURED",
@@ -547,10 +554,10 @@ def _login_by_phone(identity: str, phone_code: str):
         return fail("WX_PHONE_FAILED", str(exc), 400)
 
     if identity == ANONYMOUS:
-        # 本地开发没有云托管注入的身份头，链路本身走不通（无法确定给谁提额度）。
+        # 本地开发没有云托管注入的身份头，链路本身走不通（无法确定手机号记给谁）。
         # 生产环境不存在这种情况。
         logger.warning("匿名模式下授权手机号，无法归属用户：%s", info["masked"])
-        return fail("NO_IDENTITY", "当前环境拿不到用户身份，无法提升额度", 400)
+        return fail("NO_IDENTITY", "当前环境拿不到用户身份，无法记录手机号", 400)
 
     quota_service.mark_verified(
         identity,
@@ -558,7 +565,7 @@ def _login_by_phone(identity: str, phone_code: str):
         phone_hash=info["fingerprint"],
         method="phone",
     )
-    logger.info("用户 %s 手机号授权成功（%s），额度提升", identity, info["masked"])
+    logger.info("用户 %s 手机号授权成功（%s）", identity, info["masked"])
     return ok(
         {
             "verified": True,
@@ -572,7 +579,7 @@ def _login_by_code2session(identity: str, code: str):
     """[兼容] 老的 ``wx.login()`` 登录路径。
 
     code2Session 换回来的 openid 必须与请求头里的 ``X-WX-OPENID`` 一致——
-    否则任何人拿别人的 code 来调这个接口都能把自己的额度翻倍。
+    否则任何人都能拿别人的 code 往自己名下写记录。
     """
     logger.warning("使用了已废弃的 code2Session 登录路径，建议前端改为手机号授权")
     if not wechat.is_configured():
@@ -586,8 +593,8 @@ def _login_by_code2session(identity: str, code: str):
     openid = session["openid"]
     if identity == ANONYMOUS:
         # 本地开发没有云托管注入的身份头，只能拿 code2Session 的结果当身份。
-        # 注意：后续请求的 identity 仍是 "anonymous"，所以本地看不到额度提升——
-        # 这是开发模式的固有限制，生产环境不存在。
+        # 注意：后续请求的 identity 仍是 "anonymous"——这是开发模式的固有限制，
+        # 生产环境不存在。
         logger.warning("匿名模式下登录，用 code2Session 的 openid 标记：%s", openid)
     elif openid != identity:
         logger.warning(
@@ -600,7 +607,7 @@ def _login_by_code2session(identity: str, code: str):
     quota_service.mark_verified(
         openid, session.get("session_key") or "", method="code2session"
     )
-    logger.info("用户 %s 登录成功，额度提升到已登录档", openid)
+    logger.info("用户 %s 通过 code2Session 记录成功", openid)
     return ok({"verified": True, "quota": quota_service.get_quota(openid)})
 
 

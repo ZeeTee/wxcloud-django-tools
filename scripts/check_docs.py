@@ -48,6 +48,7 @@ import django  # noqa: E402
 
 django.setup()
 
+from django.conf import settings  # noqa: E402
 from django.core.management import call_command  # noqa: E402
 from django.test import Client  # noqa: E402
 
@@ -71,12 +72,11 @@ def check(name: str, condition: bool, extra: object = "") -> None:
 DOC_TOP = {
     "/api/health": {
         "status", "llmConfigured", "llm", "defaultSkill", "skills",
-        "promptFingerprints", "phoneAuthReady", "phoneAuthMode", "quotaLimits",
+        "promptFingerprints", "phoneAuthReady", "phoneAuthMode", "quotaLimit",
     },
     "/api/skills": {"default", "scenes", "intensities", "skills"},
     "/api/quota": {
-        "used", "limit", "remaining", "verified",
-        "anonymousLimit", "verifiedLimit", "phoneMasked",
+        "used", "limit", "remaining", "resetsAt", "verified", "phoneMasked",
     },
     "/api/usage": {"balance", "balanceError", "today"},
     "/api/feedback/summary": {
@@ -91,6 +91,11 @@ DOC_USAGE_TODAY = {
     "promptTokens", "completionTokens", "cacheHitTokens", "costCNY",
 }
 DOC_SKILL_ITEM = {"slug", "name", "version", "description", "scenes", "defaultScene"}
+# /api/task/<taskId> 在 status=done 时返回的 usage
+DOC_USAGE = {
+    "promptTokens", "completionTokens", "totalTokens",
+    "cacheHitTokens", "cacheHitRate", "costCNY", "costSource",
+}
 
 # 「二选一」的字段：文档写明两者只会出现一个
 EITHER_OR = {"/api/usage": {"balance", "balanceError"}}
@@ -143,9 +148,9 @@ check(
     f"差集：{set((health.get('llm') or {}).keys()) ^ DOC_HEALTH_LLM}",
 )
 check(
-    "health.quotaLimits = {anonymous, verified}",
-    set((health.get("quotaLimits") or {}).keys()) == {"anonymous", "verified"},
-    health.get("quotaLimits"),
+    "health.quotaLimit 是正整数",
+    isinstance(health.get("quotaLimit"), int) and health["quotaLimit"] > 0,
+    health.get("quotaLimit"),
 )
 check(
     "health.phoneAuthMode ∈ {cloudcall, token}",
@@ -165,7 +170,16 @@ check("skills.default 是字符串", isinstance(skills.get("default"), str), ski
 print("\n=== 3. /api/quota 的语义（README 里逐条写过的）===")
 quota = get("/api/quota")["data"]
 check("remaining == max(0, limit - used)", quota["remaining"] == max(0, quota["limit"] - quota["used"]), quota)
-check("未授权时 limit == anonymousLimit", quota["limit"] == quota["anonymousLimit"], quota)
+check(
+    "limit == 配置的 DEAI_DAILY_QUOTA（不再是按用户算出来的档位）",
+    quota["limit"] == settings.DEAI_DAILY_QUOTA,
+    {"返回": quota["limit"], "配置": settings.DEAI_DAILY_QUOTA},
+)
+check(
+    "resetsAt 在未来 24 小时内（北京时间 0 点）",
+    quota["resetsAt"].endswith("00:00:00") and len(quota["resetsAt"]) == 19,
+    quota["resetsAt"],
+)
 check("未授权时 phoneMasked 为空串", quota["phoneMasked"] == "", repr(quota["phoneMasked"]))
 check("初始 used == 0", quota["used"] == 0, quota["used"])
 check("remaining == limit（还没用过）", quota["remaining"] == quota["limit"], quota)
@@ -182,7 +196,46 @@ analyze = client.post(
 check("/api/analyze 返回 200", analyze.status_code == 200, analyze.status_code)
 check("/api/analyze 不消耗额度", get("/api/quota")["data"]["used"] == 0)
 
-print("\n=== 4. 未知接口不该静默返回 200 ===")
+print("\n=== 4. /api/task/<taskId> 的 usage 字段 ===")
+# 直接造一条 done 的任务：真实改写要调模型（这里连不上），
+# 而这里要验的是「读接口的字段契约」，插一条数据就够了。
+from deai.models import RewriteTask  # noqa: E402
+
+USAGE_TASK = "doccheck-usage-task"
+RewriteTask.objects.filter(pk=USAGE_TASK).delete()
+RewriteTask.objects.create(
+    id=USAGE_TASK,
+    openid="doccheck-openid",
+    mode="general",
+    skill="humanizer",
+    intensity="medium",
+    source_text="原文",
+    rules_text="规则版",
+    llm_text="改好的",
+    status=RewriteTask.STATUS_DONE,
+    prompt_tokens=15233,
+    completion_tokens=77,
+    cache_hit_tokens=14592,
+    cost_cny=0.002482,
+    cost_source="local_table",
+)
+usage_resp = client.get(f"/api/task/{USAGE_TASK}", **AUTH)
+check("任务详情返回 200", usage_resp.status_code == 200, usage_resp.status_code)
+usage = usage_resp.json()["data"].get("usage", {})
+check(
+    "usage 字段与文档一致",
+    set(usage.keys()) == DOC_USAGE,
+    f"差集：{set(usage.keys()) ^ DOC_USAGE}",
+)
+check("usage.costSource 透传落库值", usage.get("costSource") == "local_table", usage.get("costSource"))
+check("usage.totalTokens = prompt + completion", usage.get("totalTokens") == 15310, usage.get("totalTokens"))
+check(
+    "usage.cacheHitRate 计算正确",
+    usage.get("cacheHitRate") == round(14592 / 15233, 4),
+    usage.get("cacheHitRate"),
+)
+
+print("\n=== 5. 未知接口不该静默返回 200 ===")
 check("/api/nope 不是 200", client.get("/api/nope", **AUTH).status_code != 200)
 
 print("\n" + "=" * 60)

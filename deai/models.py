@@ -47,6 +47,12 @@ class RewriteTask(models.Model):
     completion_tokens = models.IntegerField(default=0)
     cache_hit_tokens = models.IntegerField(default=0)
     cost_cny = models.DecimalField(max_digits=12, decimal_places=6, default=0)
+    # cost_cny 是怎么来的：``provider`` = 供应商直接上报的美元成本折算（可信）；
+    # ``local_table`` = 按 LLM_PRICE_* 本地价格表估算（仅供参考）。
+    #
+    # 为什么要专门存这个：两种来源混在一列里，光看 0.0025 分不出它有多可信，
+    # 改了价格表之后也说不清哪些历史数据是估的。空串 = 老数据或没跑到这一步。
+    cost_source = models.CharField(max_length=16, blank=True, default="")
     error = models.TextField(blank=True, default="")
     model_name = models.CharField(max_length=64, blank=True, default="")
     # 实际调用的是哪个 provider（deepseek / openrouter）。换供应商时效果和费用

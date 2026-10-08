@@ -1,23 +1,31 @@
-"""每日免费额度，分「未授权 / 已授权手机号」两档。
+"""每日使用次数：**按 openid 计**，每人每天 10 次。
 
 规则层（体检 + 规则改写）**不计次**，因为它不花钱、毫秒级返回；
-只有调用大模型的「AI 深度改写」才消耗额度。
+只有调用大模型的「AI 深度改写」才消耗次数。
 
-为什么匿名也按 openid 记在后端
-------------------------------
-``X-WX-OPENID`` 是云托管**自动注入**的，前端不需要做任何事，未登录也能拿到。
-有人会想「未登录就用前端本地存储计数」——但那样用户**清一次小程序缓存次数就归零**，
-等于没有限制，而且前端数据可被篡改。用 openid 记在后端，清缓存重置不了
+为什么按 openid 记在后端
+------------------------
+``X-WX-OPENID`` 是云托管**自动注入**的，前端不需要做任何事、也伪造不了。
+有人会想「就用前端本地存储计数」——但那样用户**清一次小程序缓存次数就归零**，
+等于没有限制，而且前端数据可被篡改。记在后端，清缓存重置不了
 （要换微信号才行），成本只是一次数据库查询。
 
-「已登录」为什么需要额外动作
-----------------------------
-openid 未登录就有，所以匿名和登录**在身份上没有区别**；``wx.login()`` 换 openid
-也证明不了任何东西（谁都能触发，微信不做校验）。要区分两档额度，必须有
-一个用户主动做过、且微信背书的动作——见 ``deai/wechat.py`` 的手机号授权。
+为什么不分档
+------------
+这里曾经分「未授权 5 次 / 授权手机号后 10 次」两档，靠手机号授权区分。
+现在改成**只要拿到 openid 就是 10 次**：手机号授权要花钱（0.03 元/次）、
+还有主体资质门槛（个人主体用不了），为了一次额度差异付这些成本不划算。
+
+次数怎么重置
+------------
+``QuotaUsage`` 按 ``(openid, 日期)`` 记一行，日期取**北京时间**当天，
+所以北京时间 0 点一过自然是新的一行、从 0 开始。不需要定时任务，
+也不怕漏跑任务——这是「按天分桶」相比「定时清零」的好处。
 """
 
 from __future__ import annotations
+
+from datetime import timedelta
 
 from django.conf import settings
 from django.db.models import F
@@ -31,7 +39,7 @@ class QuotaExceeded(Exception):
 
 
 def _today():
-    """今天的日期。
+    """今天的日期（北京时间）。
 
     注意不要用 ``timezone.localdate()``：本项目 ``USE_TZ=False``，此时
     ``timezone.now()`` 返回 naive datetime，而 ``localdate()`` 内部会对它调用
@@ -42,25 +50,29 @@ def _today():
     return timezone.now().date()
 
 
-def _limits() -> tuple[int, int]:
-    """返回 ``(匿名上限, 已授权上限)``。
+def resets_at():
+    """下一次重置的时刻（北京时间 0 点，naive datetime）。"""
+    now = timezone.now()
+    return (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
-    旧的 ``DEAI_DAILY_LIMIT`` 若被显式配置（>0），则两档都用它——
-    这样老部署升级上来行为不变，不会突然把额度从 20 砍到 5。
+
+def daily_limit() -> int:
+    """每人每天的改写次数上限。
+
+    变量叫 ``DEAI_DAILY_QUOTA`` 而不是 ``DEAI_DAILY_LIMIT``：后者是早期那个
+    「一配就同时覆盖两档」的变量，已彻底废弃。**刻意不复用这个名字**——
+    老部署的环境变量里可能还留着 ``DEAI_DAILY_LIMIT=20``，复用的话它会
+    悄无声息地又生效一次，正是我们刚花力气铲掉的坑。
     """
-    legacy = settings.DEAI_DAILY_LIMIT
-    if legacy > 0:
-        return legacy, legacy
-    return settings.DEAI_DAILY_LIMIT_ANONYMOUS, settings.DEAI_DAILY_LIMIT_VERIFIED
-
-
-def limits() -> tuple[int, int]:
-    """生效的 ``(匿名上限, 已授权上限)``。给 views 做部署自检展示用。"""
-    return _limits()
+    return settings.DEAI_DAILY_QUOTA
 
 
 def is_verified(openid: str) -> bool:
-    """该用户是否通过手机号授权验证过（决定走哪一档额度）。"""
+    """该用户是否做过手机号授权。
+
+    注意：**它不再影响次数**（现在是统一 10 次）。保留它是因为
+    ``/api/quota`` 要回显「已授权 138****8000」这类用户状态。
+    """
     return UserProfile.objects.filter(openid=openid, verified_at__isnull=False).exists()
 
 
@@ -72,9 +84,8 @@ def mark_verified(
     phone_hash: str = "",
     method: str = "phone",
 ) -> None:
-    """把用户标记为已通过验证。幂等，可以重复调用。
+    """记录一次手机号授权。幂等，可以重复调用。
 
-    ``verified_at`` 一旦写上就只更新、不清空——用户已经拿到的额度不该被收回。
     手机号字段只在传了值时才覆盖，避免旧的 code2Session 登录把已授权的
     手机号抹掉。
     """
@@ -89,43 +100,38 @@ def mark_verified(
 
 
 def get_quota(openid: str) -> dict:
-    """查询当日额度。前端据此显示「还能用几次 / 授权手机号可提升到 N 次」。"""
-    anonymous_limit, verified_limit = _limits()
-    # 一次查询同时拿「是否已验证」和「打码手机号」，不要分两次查
-    profile = UserProfile.objects.filter(openid=openid).first()
-    verified = bool(profile and profile.verified_at)
-    limit = verified_limit if verified else anonymous_limit
+    """查询当日剩余次数。前端据此显示「今日还剩 N / M 次」。"""
+    limit = daily_limit()
     row = QuotaUsage.objects.filter(openid=openid, day=_today()).first()
     used = row.used if row else 0
+
+    # 顺手把用户状态带出去（一次查询），前端可以显示「已授权 138****8000」
+    profile = UserProfile.objects.filter(openid=openid).first()
+
     return {
         "used": used,
         "limit": limit,
         "remaining": max(0, limit - used),
-        # 下面几个字段给前端做引导用：未授权时提示「授权后每天 N 次」
-        "verified": verified,
-        "anonymousLimit": anonymous_limit,
-        "verifiedLimit": verified_limit,
-        # 已授权时前端可以显示「已授权 138****8000」
+        # 北京时间下一次归零的时刻。前端显示「明天 N 点恢复」用得上
+        "resetsAt": resets_at().strftime("%Y-%m-%d %H:%M:%S"),
+        "verified": bool(profile and profile.verified_at),
         "phoneMasked": (profile.phone_masked if profile else "") or "",
     }
 
 
 def consume(openid: str) -> dict:
-    """消耗一次额度。超额时抛 ``QuotaExceeded``。"""
-    anonymous_limit, verified_limit = _limits()
-    verified = is_verified(openid)
-    limit = verified_limit if verified else anonymous_limit
+    """消耗一次次数。超额时抛 ``QuotaExceeded``。
 
+    比 ``get_quota`` 少查一次用户表：改写接口不需要回显手机号，
+    这里只关心计数。
+    """
+    limit = daily_limit()
     row, _created = QuotaUsage.objects.get_or_create(
         openid=openid, day=_today(), defaults={"used": 0}
     )
     if row.used >= limit:
-        if verified:
-            raise QuotaExceeded(f"今天的 {limit} 次 AI 改写额度用完了，明天恢复")
-        # 未验证手机号时把「授权能提升额度」写进错误里——这正是此刻最该给的引导
         raise QuotaExceeded(
-            f"今天的 {anonymous_limit} 次免授权额度用完了。"
-            f"授权手机号后每天可用 {verified_limit} 次，明天也会自动恢复"
+            f"今天的 {limit} 次 AI 改写额度用完了，明天 0 点自动恢复"
         )
 
     # 用 F() 做原子自增，避免并发下的丢更新
@@ -135,14 +141,14 @@ def consume(openid: str) -> dict:
         "used": used,
         "limit": limit,
         "remaining": max(0, limit - used),
-        "verified": verified,
-        "anonymousLimit": anonymous_limit,
-        "verifiedLimit": verified_limit,
+        "resetsAt": resets_at().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
 
 __all__ = [
     "QuotaExceeded",
+    "daily_limit",
+    "resets_at",
     "is_verified",
     "mark_verified",
     "get_quota",

@@ -99,6 +99,9 @@ def _run(task_id: str) -> None:
             completion_tokens=getattr(usage, "completion_tokens", 0) or 0,
             cache_hit_tokens=getattr(usage, "cache_hit_tokens", 0) or 0,
             cost_cny=Decimal(str(cost.get("costCNY") or 0)),
+            # 把「这个金额是怎么来的」也存下来：provider = 供应商上报，
+            # local_table = 按本地价格表估算。不存的话事后分不出可信度。
+            cost_source=str(cost.get("source") or ""),
             error="",
             elapsed_ms=int((time.monotonic() - started) * 1000),
         )
