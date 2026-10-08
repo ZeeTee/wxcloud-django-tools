@@ -155,8 +155,8 @@ curl -s localhost:8080/api/count
 
 ```bash
 python3 -m unittest discover -s tests -t .   # 引擎 / skill / 使用次数 / 微信封装 / 请求日志单测，170 项
-python3 scripts/smoke_api.py                 # 接口端到端冒烟，91 项
-python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，33 项
+python3 scripts/smoke_api.py                 # 接口端到端冒烟，101 项
+python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，38 项
 ```
 
 `smoke_api.py` 会故意把模型地址指向一个连不上的端口，从而把「建任务 → 后台线程 →
@@ -821,7 +821,8 @@ curl -s https://<你的域名>/api/debug/headers | python3 -m json.tool
 ```json
 {
   "promptTokens": 15233, "completionTokens": 77, "totalTokens": 15310,
-  "cacheHitTokens": 14592, "cacheHitRate": 0.9579, "costCNY": 0.002482
+  "cacheHitTokens": 14592, "cacheHitRate": 0.9579,
+  "costCNY": 0.002482, "costSource": "local_table"
 }
 ```
 
@@ -830,6 +831,12 @@ curl -s https://<你的域名>/api/debug/headers | python3 -m json.tool
 | `promptTokens` / `completionTokens` / `totalTokens` | 输入、输出、合计 token |
 | `cacheHitTokens` / `cacheHitRate` | 命中 prompt 缓存的量——**这是成本的关键**，命中价与未命中价差 50 倍 |
 | `costCNY` | 本次费用（元）。由供应商上报的美元成本折算，或按本地价格表估算 |
+| `costSource` | **`costCNY` 是怎么来的**：`provider` = 供应商直接上报（可信）；`local_table` = 按本地价格表估算（仅供参考）；空串 = 老数据 |
+
+> ⚠️ **失败的任务没有 `usage`**。`usage` 只在 `status=done` 时出现——失败路径拿不到
+> 模型的 usage。有一种情况会漏：模型已经返回了 usage、之后才失败（解析出错等），
+> 那次调用**实际已经计费但库里查不到**。所以 `/api/usage` 的今日费用是
+> 「成功任务的花费」，不等于账户实际扣费。
 
 ### 错误码
 
@@ -943,7 +950,9 @@ OPENROUTER_API_KEY=sk-or-v1-...
 | 余额接口 | `/user/balance` | `/credits` + `/key` |
 
 `estimate_cost` 会标明 `source`：`provider`（供应商上报，可信）或 `local_table`
-（本地估算，仅供参考）。`/api/health` 的 `llm` 字段会回显当前 provider、模型和端点。
+（本地估算，仅供参考）。这个来源会**落库并在接口里返回**（`usage.costSource`），
+所以事后能分清某个金额有多可信——详见第「费用怎么算的」一节。
+`/api/health` 的 `llm` 字段会回显当前 provider、模型和端点。
 
 **实测结论：这个场景下 DeepSeek 直连明显更好**（同一段文本、同一个 skill）：
 
@@ -993,16 +1002,31 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 ```json
 "usage": {
   "promptTokens": 11591, "completionTokens": 73, "totalTokens": 11664,
-  "cacheHitTokens": 11392, "cacheHitRate": 0.9828, "costCNY": 0.0014
+  "cacheHitTokens": 11392, "cacheHitRate": 0.9828,
+  "costCNY": 0.0014, "costSource": "local_table"
 }
 ```
 
 **缓存是这个功能成本的关键**：humanizer 的 system prompt 固定不变，实测
-**缓存命中率 98%**，而缓存命中价与未命中价**差 50 倍**。响应里也给出了
-`breakdown`（缓存命中/未命中/输出各占多少），便于定位成本去向。
+**缓存命中率 98%**，而缓存命中价与未命中价**差 50 倍**。
 
-估算单价按 `LLM_PRICE_*` 环境变量算，默认取 DeepSeek 高峰价（宁可高估）；
-空闲时段是高峰的一半，要更准就按当前时段改。
+**`costSource` 要看清**：
+
+| 值 | 含义 | 怎么来的 |
+| --- | --- | --- |
+| `provider` | 供应商直接上报的成本折算 | OpenRouter 会在响应里给 `cost`（美元），乘以 `USD_CNY_RATE` |
+| `local_table` | 按 `LLM_PRICE_*` 本地价格表估算 | DeepSeek 不返回费用，只能用这个 |
+| 空串 | 老数据（该字段上线前落库的） | — |
+
+估算单价按 `LLM_PRICE_*` 算，默认取 DeepSeek 高峰价（宁可高估）；空闲时段是高峰的
+一半，要更准就按当前时段改。**改了价格表之后，历史行的 `costSource` 能告诉你
+哪些数字是按旧价格估的**——这也是当初把它落库的原因。
+
+> ⚠️ `/api/usage` 的「今日费用」是把两种来源**加在一起**的，所以那个数字是混合口径。
+> 要严格对账就别用它，按 `cost_source` 分开统计。
+
+**失败的任务不记费用**：`usage` 只在 `status=done` 时写入。模型已经返回 usage、
+之后才失败的那种调用，实际计费了但库里没有（见第六节 `/api/task/<id>` 的提醒）。
 
 余额接口仍然保留（`/api/usage`），但只用于「够不够用」的粗粒度监控。
 
@@ -1051,6 +1075,7 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 | `completion_tokens` | int | 默认 0 | 输出 token |
 | `cache_hit_tokens` | int | 默认 0 | 命中 prompt 缓存的 token。**成本关键**：命中价与未命中价差 50 倍，实测直连 DeepSeek 时命中率约 96% |
 | `cost_cny` | numeric(12,6) | 默认 0 | 本次费用（元）。供应商上报的美元成本折算，或按本地价格表估算 |
+| `cost_source` | varchar(16) | 空串 | `cost_cny` 的来源：`provider`（供应商上报，可信）/ `local_table`（本地价格表估算，仅供参考）。**不存这个的话事后分不出金额的可信度**，改了价格表也说不清哪些是估的 |
 | `error` | longtext | 可空 | 失败原因（人话，直接给用户看） |
 | `model_name` | varchar(64) | 可空 | 模型实际返回的模型名（可能与你请求的不同，如 `deepseek-chat` → `deepseek-flash`） |
 | `provider` | varchar(16) | 可空 | 实际用的供应商：`deepseek` / `openrouter` |

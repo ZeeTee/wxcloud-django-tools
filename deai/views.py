@@ -172,6 +172,10 @@ def _task_payload(task: RewriteTask) -> dict:
                 round(task.cache_hit_tokens / task.prompt_tokens, 4) if task.prompt_tokens else 0
             ),
             "costCNY": float(task.cost_cny or 0),
+            # costCNY 的来源：provider = 供应商上报（可信）；
+            # local_table = 按 LLM_PRICE_* 本地估算（仅供参考）。
+            # 空串 = 老数据。前端想标「估算值」就靠它。
+            "costSource": task.cost_source or "",
         }
         try:
             payload["warnings"] = json.loads(task.warnings or "[]")

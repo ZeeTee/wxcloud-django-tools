@@ -91,6 +91,11 @@ DOC_USAGE_TODAY = {
     "promptTokens", "completionTokens", "cacheHitTokens", "costCNY",
 }
 DOC_SKILL_ITEM = {"slug", "name", "version", "description", "scenes", "defaultScene"}
+# /api/task/<taskId> 在 status=done 时返回的 usage
+DOC_USAGE = {
+    "promptTokens", "completionTokens", "totalTokens",
+    "cacheHitTokens", "cacheHitRate", "costCNY", "costSource",
+}
 
 # 「二选一」的字段：文档写明两者只会出现一个
 EITHER_OR = {"/api/usage": {"balance", "balanceError"}}
@@ -191,7 +196,46 @@ analyze = client.post(
 check("/api/analyze 返回 200", analyze.status_code == 200, analyze.status_code)
 check("/api/analyze 不消耗额度", get("/api/quota")["data"]["used"] == 0)
 
-print("\n=== 4. 未知接口不该静默返回 200 ===")
+print("\n=== 4. /api/task/<taskId> 的 usage 字段 ===")
+# 直接造一条 done 的任务：真实改写要调模型（这里连不上），
+# 而这里要验的是「读接口的字段契约」，插一条数据就够了。
+from deai.models import RewriteTask  # noqa: E402
+
+USAGE_TASK = "doccheck-usage-task"
+RewriteTask.objects.filter(pk=USAGE_TASK).delete()
+RewriteTask.objects.create(
+    id=USAGE_TASK,
+    openid="doccheck-openid",
+    mode="general",
+    skill="humanizer",
+    intensity="medium",
+    source_text="原文",
+    rules_text="规则版",
+    llm_text="改好的",
+    status=RewriteTask.STATUS_DONE,
+    prompt_tokens=15233,
+    completion_tokens=77,
+    cache_hit_tokens=14592,
+    cost_cny=0.002482,
+    cost_source="local_table",
+)
+usage_resp = client.get(f"/api/task/{USAGE_TASK}", **AUTH)
+check("任务详情返回 200", usage_resp.status_code == 200, usage_resp.status_code)
+usage = usage_resp.json()["data"].get("usage", {})
+check(
+    "usage 字段与文档一致",
+    set(usage.keys()) == DOC_USAGE,
+    f"差集：{set(usage.keys()) ^ DOC_USAGE}",
+)
+check("usage.costSource 透传落库值", usage.get("costSource") == "local_table", usage.get("costSource"))
+check("usage.totalTokens = prompt + completion", usage.get("totalTokens") == 15310, usage.get("totalTokens"))
+check(
+    "usage.cacheHitRate 计算正确",
+    usage.get("cacheHitRate") == round(14592 / 15233, 4),
+    usage.get("cacheHitRate"),
+)
+
+print("\n=== 5. 未知接口不该静默返回 200 ===")
 check("/api/nope 不是 200", client.get("/api/nope", **AUTH).status_code != 200)
 
 print("\n" + "=" * 60)

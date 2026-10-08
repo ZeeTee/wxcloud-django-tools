@@ -363,6 +363,93 @@ check(
 if status == "failed":
     check("失败时有人话 error", bool(payload.get("error")), payload.get("error"))
 
+print("\n=== 5.5 用量与费用来源落库 ===")
+# 冒烟里真实的任务一定会失败（模型地址指向 discard 端口），所以这里桩掉
+# llm_rewrite 走一遍成功的写入路径，验证 token / 金额 / 来源都真的落库了。
+from deai import tasks as deai_tasks  # noqa: E402
+from deai.engine.llm import Usage  # noqa: E402
+from deai.models import RewriteTask  # noqa: E402
+
+USAGE_TASK_ID = "smoke-usage-task"
+RewriteTask.objects.filter(pk=USAGE_TASK_ID).delete()
+RewriteTask.objects.create(
+    id=USAGE_TASK_ID,
+    openid="smoke-usage",
+    mode="general",
+    skill="humanizer",
+    intensity="medium",
+    source_text="首先，我们要明确目标。",
+    rules_text="规则版",
+    status=RewriteTask.STATUS_PENDING,
+)
+
+_fake_result = {
+    "text": "改好的文本",
+    "report": "",
+    "warnings": [],
+    "model": "deepseek-chat",
+    "provider": "deepseek",
+    "skill": "humanizer",
+    "skillVersion": "4.1.0",
+    "promptFingerprint": "abc123456789",
+    "protocolOk": True,
+    "addedFacts": "",
+    "usage": Usage(
+        prompt_tokens=15233, completion_tokens=77, cache_hit_tokens=14592
+    ),
+    # DeepSeek 不返回 cost，所以走本地价格表 —— 这正是要落库区分的那种情况
+    "cost": {"costCNY": 0.002482, "source": "local_table", "provider": "deepseek"},
+}
+
+with patch.object(deai_tasks, "llm_rewrite", return_value=_fake_result):
+    deai_tasks._run(USAGE_TASK_ID)
+
+u_task = RewriteTask.objects.get(pk=USAGE_TASK_ID)
+check("status 落库为 done", u_task.status == RewriteTask.STATUS_DONE, u_task.status)
+check(
+    "token 用量落库",
+    u_task.prompt_tokens == 15233
+    and u_task.completion_tokens == 77
+    and u_task.cache_hit_tokens == 14592,
+    (u_task.prompt_tokens, u_task.completion_tokens, u_task.cache_hit_tokens),
+)
+check("金额落库", float(u_task.cost_cny) == 0.002482, float(u_task.cost_cny))
+check(
+    "费用来源落库（provider / local_table）",
+    u_task.cost_source == "local_table",
+    u_task.cost_source,
+)
+
+r = client.get(f"/api/task/{USAGE_TASK_ID}", HTTP_X_WX_OPENID="smoke-usage")
+usage = r.json().get("data", {}).get("usage", {})
+check("接口 200", r.status_code == 200, r.status_code)
+check("usage 返回 token 用量", usage.get("totalTokens") == 15310, usage)
+check(
+    "usage 返回 cacheHitRate",
+    usage.get("cacheHitRate") == round(14592 / 15233, 4),
+    usage.get("cacheHitRate"),
+)
+check("usage 返回 costCNY", usage.get("costCNY") == 0.002482, usage.get("costCNY"))
+check(
+    "usage 返回 costSource（前端据此标「估算值」）",
+    usage.get("costSource") == "local_table",
+    usage.get("costSource"),
+)
+check(
+    "usage 字段集合与文档一致",
+    set(usage.keys())
+    == {
+        "promptTokens",
+        "completionTokens",
+        "totalTokens",
+        "cacheHitTokens",
+        "cacheHitRate",
+        "costCNY",
+        "costSource",
+    },
+    sorted(usage.keys()),
+)
+
 print("\n=== 6. 任务归属 ===")
 r = client.get(f"/api/task/{task_id}", HTTP_X_WX_OPENID="someone-else")
 check("他人任务 -> 403 FORBIDDEN", r.status_code == 403 and r.json()["error"]["code"] == "FORBIDDEN", r.json())
