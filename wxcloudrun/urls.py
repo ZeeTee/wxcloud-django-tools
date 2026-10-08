@@ -34,6 +34,8 @@ urlpatterns = [
     path("api/feedback/summary", deai_views.feedback_summary, name="deai-feedback-summary"),
     path("api/skills", deai_views.skills, name="deai-skills"),
     path("api/usage", deai_views.usage, name="deai-usage"),
+    # 诊断用，默认关闭（DEAI_DEBUG_HEADERS），关着时返回 404
+    path("api/debug/headers", deai_views.debug_headers, name="deai-debug-headers"),
 
     # ---------- 模板原有：计数器示例 ----------
     # 注意 views.counter 的签名是 (request, _)，这里的捕获组会被当作第二个位置参数

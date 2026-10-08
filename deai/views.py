@@ -136,6 +136,9 @@ def _task_payload(task: RewriteTask) -> dict:
     ``task_status`` 和「同步命中」两条路径共用，避免两处字段慢慢跑偏。
     """
     payload: dict = {
+        # 两条路径都要带 taskId：前端「切后台后回来续跑」时只调轮询接口，
+        # 拿不到 id 就没法把结果落回同一条历史记录。
+        "taskId": task.id,
         "status": task.status,
         "rulesText": task.rules_text,
         "elapsedMs": task.elapsed_ms,
@@ -208,6 +211,69 @@ def health(request):
             "quotaLimits": dict(
                 zip(("anonymous", "verified"), quota_service.limits())
             ),
+        }
+    )
+
+
+@api("GET")
+def debug_headers(request):
+    """诊断：回显云托管注入的身份头。默认关闭（``DEAI_DEBUG_HEADERS``）。
+
+    **为什么需要它**：``X-WX-OPENID`` 这类头是**平台在服务端注入**的，客户端
+    根本不发送，所以微信开发者工具的 Network 面板里永远看不到。要确认
+    「到底有没有注入、值是什么」，只能从容器侧看——这个接口就是那扇窗。
+
+    它**故意不做身份校验**：身份解析失败时（比如头根本没注入）更要把现场
+    打出来，这时候要是先被 401 拦住就什么都看不到了。
+
+    ⚠️ 它会回显 openid，属于敏感信息。只在排查时临时开，查完立刻关。
+    """
+    if not settings.DEAI_DEBUG_HEADERS:
+        # 关着的时候按「接口不存在」处理，不对外暴露它的存在
+        return fail("NOT_FOUND", "接口不存在", 404)
+
+    known = (
+        "X-WX-OPENID",
+        "X-WX-FROM-OPENID",
+        "X-WX-APPID",
+        "X-WX-FROM-APPID",
+        "X-WX-UNIONID",
+        "X-WX-FROM-UNIONID",
+        "X-WX-ENV",
+        "X-WX-SOURCE",
+        "X-Original-Forwarded-For",
+        "X-Forwarded-For",
+        "User-Agent",
+    )
+    headers = {}
+    for name in known:
+        value = request.headers.get(name)
+        if value is not None:
+            headers[name] = value
+
+    # 有些框架/中间件会把 header 转成下划线形式，一并列出来
+    # 便于排查「平台明明注入了，Django 却读不到」
+    meta = {
+        k: v
+        for k, v in request.META.items()
+        if k.startswith(("HTTP_X_WX", "HTTP_X_ORIGINAL", "HTTP_X_FORWARDED"))
+    }
+
+    try:
+        identity = get_identity(request)
+    except AuthError as exc:
+        identity = f"<解析失败：{exc}>"
+
+    return ok(
+        {
+            # 业务侧最终认到的身份，是这几个头综合出来的结果
+            "identity": identity,
+            "hasOpenid": "X-WX-OPENID" in headers,
+            "hasFromOpenid": "X-WX-FROM-OPENID" in headers,
+            "hasSource": "X-WX-SOURCE" in headers,
+            "headers": headers,
+            "metaKeys": sorted(meta.keys()),
+            "allowAnonymous": settings.DEAI_ALLOW_ANONYMOUS,
         }
     )
 

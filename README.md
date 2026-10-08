@@ -8,7 +8,7 @@
 > 调用这里的 `/api/*`，两边只靠下面第六节的接口契约耦合。
 
 ```
-deai/          去 AI 味应用（引擎 + 5 个 API + 异步任务）
+deai/          去 AI 味应用（引擎 + 10 个 API + 异步任务）
 wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 ```
 
@@ -95,18 +95,25 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 │   │       ├── skill.json          产品化清单：注入规则 / 场景 / 轮次
 │   │       ├── references/         禁用词表 · 结构清单 · 示例库
 │   │       └── overrides/          场景覆盖（general / xhs）
-│   ├── views.py                6 个接口，统一响应信封
-│   ├── models.py               RewriteTask / QuotaUsage
+│   ├── views.py                10 个接口，统一响应信封
+│   ├── models.py               RewriteTask / Feedback / UserProfile / WxAccessToken / QuotaUsage
 │   ├── auth.py                 从云托管请求头取 openid
-│   ├── quota.py                每日额度
-│   └── tasks.py                后台线程池 + 超时判失败
+│   ├── quota.py                每日额度（分未授权 / 已授权两档）
+│   ├── wechat.py               手机号授权（云调用 / 自管 token）
+│   ├── tasks.py                后台线程池 + 超时判失败
+│   └── middleware.py           请求日志中间件（参数 + 身份头 + IP）
 ├── scripts/
 │   ├── dev.sh                  本地一键起服务
 │   ├── init_db.py              建库 + 建表 + 校验（幂等）
-│   └── smoke_api.py            接口端到端冒烟（无需联网）
+│   ├── smoke_api.py            接口端到端冒烟（无需联网）
+│   └── check_docs.py           接口字段与 README 的一致性校验（无需联网）
 └── tests/
     ├── test_engine.py          引擎单测（不需要 Django）
-    └── test_skills.py          skill 编译与输出解析单测
+    ├── test_skills.py          skill 编译与输出解析单测
+    ├── test_skill_lexicon.py   禁用词表解析单测
+    ├── test_llm_provider.py    provider 切换 / 用量解析 / 计价单测
+    ├── test_quota.py           额度双档逻辑单测
+    └── test_phone_auth.py      手机号授权报文与安全校验单测
 
 docs/                          设计依据（不是代码，但值得留档）
 ├── 去AI味-工程素材包.md        中文 AI 腔特征清单、词库来源、两版提示词原型
@@ -144,16 +151,21 @@ curl -s localhost:8080/api/count
 # {"code": 0, "data": 0}
 ```
 
-跑测试（**都不需要联网**）：
+跑测试（**都不需要联网、不需要模型密钥**）：
 
 ```bash
-python3 -m unittest discover -s tests -t .   # 引擎与 skill 单测，111 项
-python3 scripts/smoke_api.py                 # 接口冒烟，58 项
+python3 -m unittest discover -s tests -t .   # 引擎 / skill / 额度 / 微信封装 / 请求日志单测，164 项
+python3 scripts/smoke_api.py                 # 接口端到端冒烟，87 项
+python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，32 项
 ```
 
 `smoke_api.py` 会故意把模型地址指向一个连不上的端口，从而把「建任务 → 后台线程 →
 轮询 → 失败兜底 → 配额扣减 → 鉴权」整条链路真实走一遍，同时回归模板原有的
 `/api/count` 与主页。
+
+`check_docs.py` 把本文档第六节「接口详解」里的字段承诺变成可执行断言：
+**改了接口字段却忘了改文档，跑一下就会红**。它同样把模型地址指向 discard 端口，
+顺便验证「余额查不到时 `/api/usage` 仍返回 200、只是换成 `balanceError`」这条承诺。
 
 ### 数据库初始化
 
@@ -313,6 +325,9 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `DEAI_WORKERS` | `4` | 后台改写线程数 |
 | `DEAI_SYNC_WAIT_SECONDS` | `12` | 混合模式：同步等待多久，超时才转轮询；`0` 为纯异步 |
 | `DEAI_ALLOW_ANONYMOUS` | =`DEBUG` | **生产必须 `false`**，否则公网可白嫖 |
+| `DEAI_DEBUG_HEADERS` | =`DEBUG` | 开启诊断接口 `/api/debug/headers`（回显身份头）。**排查完立刻关**，它会回显 openid |
+| `DEAI_LOG_REQUESTS` | `true` | 请求日志：每个请求一行，含**全部参数 + 身份头 + 来源 IP**。对外放开前建议设 `false` |
+| `DEAI_LOG_MAX_CHARS` | `2000` | 请求日志里单个字段最多打多少字，超了截断；`0` 表示不截断 |
 | `MYSQL_ADDRESS` | 空 | 配了用 MySQL，不配用 SQLite |
 | `MYSQL_ALLOW_57` | `false` | 允许连 MySQL 5.7（见下方说明，**建议升级而非长期开启**） |
 | `MYSQL_DATABASE` | `django_demo` | |
@@ -346,14 +361,128 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | 8 | POST | `/api/feedback` | 对某次改写结果评价 | body `taskId` `rating` `reason` `comment` | 否 |
 | 9 | GET | `/api/feedback/summary` | 当前用户的评价统计 | 无 | 否 |
 | 10 | POST | `/api/auth/login` | 手机号授权，额度从 5 次提升到 10 次 | body `phoneCode` | 否 |
-| 10 | GET/POST | `/api/count` | 模板原有的计数器示例（保持原格式，未改动） | POST body `action` | 否 |
-| 11 | GET | `/` | 模板原有的欢迎页 | 无 | 否 |
+| 11 | GET/POST | `/api/count` | 模板原有的计数器示例（保持原格式，未改动） | POST body `action` | 否 |
+| 12 | GET | `/` | 模板原有的欢迎页 | 无 | 否 |
+| — | GET | `/api/debug/headers` | **诊断用，默认关闭**：回显云托管注入的身份头 | 无 | 否 |
 
 路径**不带尾斜杠**（`APPEND_SLASH=False`，避免 callContainer 遇到 301 重定向）。
+上表 12 行里，**前 10 个都有自己的详解小节**（`/api/count` 与 `/` 是模板原有、未改动）。
 
 ---
 
 ### 接口详解
+
+#### GET /api/health —— 部署自检
+
+无上送参数。返回 `data`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | string | 固定 `"up"` |
+| `llmConfigured` | bool | 模型密钥配没配。`false` 时 `/api/rewrite` 会返回 503 |
+| `llm` | object | `{provider, providerLabel, model, baseUrl, keyConfigured, available[]}` |
+| `defaultSkill` | string | 不传 `skill` 时用哪个 |
+| `skills` | string[] | 已加载的 skill slug，外加 `legacy` |
+| `promptFingerprints` | object | `{slug: 指纹}`，用来核对线上跑的是哪一份 prompt |
+| `phoneAuthReady` | bool | 手机号授权能不能用（云调用模式只要控制台开关开了就是 `true`） |
+| `phoneAuthMode` | string | `cloudcall` = 走开放接口服务；`token` = 自管 access_token |
+| `quotaLimits` | object | `{anonymous, verified}`，**实际生效**的两档上限（已被旧变量 `DEAI_DAILY_LIMIT` 覆盖过） |
+
+**前端拿它做什么**：`phoneAuthReady` 决定要不要显示「授权手机号，每天 10 次」的入口。
+不显示比显示一个点了就报错的按钮好——手机号能力对个人主体小程序不开放。
+
+#### GET /api/skills —— 可用的 skill / 场景 / 强度
+
+无上送参数。返回 `data`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `default` | string | 默认 skill slug（当前是 `humanizer`） |
+| `scenes` | string[] | 全部场景的并集：`general` / `xhs` / `academic` / `official` |
+| `intensities` | string[] | 全部强度：`light` / `medium` / `heavy` |
+| `skills` | array | 每个元素见下 |
+
+`skills[]`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `slug` | string | 传给 `/api/rewrite` 的 `skill` |
+| `name` / `description` | string | 展示用中文名与说明 |
+| `version` | string | skill.json 里手写的版本号（可能忘记 bump，别当权威） |
+| `scenes` | string[] | **这个 skill 自己支持的场景**，比全局 `scenes` 更准 |
+| `defaultScene` | string | 这个 skill 的默认场景 |
+
+**前端应该用它渲染选项而不是写死**：后端加一个场景，前端不用改代码就多一个按钮。
+注意后端只给 key（`general`/`xhs`…），**中文名不在返回里**，由前端映射；
+映射表里没有的 key 直接显示原始字符串，不要渲染成空白。
+
+#### GET /api/quota —— 查今日剩余次数
+
+无上送参数。返回 `data`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `used` | int | 今天已用掉几次 |
+| `limit` | int | 当前档位的每日上限（`anonymousLimit` 或 `verifiedLimit`） |
+| `remaining` | int | 还剩几次，等于 `max(0, limit - used)` |
+| `verified` | bool | 是否已通过手机号授权（决定走哪一档） |
+| `anonymousLimit` | int | 未授权档上限，默认 `5` |
+| `verifiedLimit` | int | 已授权档上限，默认 `10` |
+| `phoneMasked` | string | 已授权时是打码手机号如 `138****8000`；未授权为空串 |
+
+```json
+{
+  "ok": true,
+  "data": {
+    "used": 2, "limit": 5, "remaining": 3,
+    "verified": false, "anonymousLimit": 5, "verifiedLimit": 10,
+    "phoneMasked": ""
+  }
+}
+```
+
+**几个容易误解的点**：
+
+- **这个接口只读，不消耗额度。** 只有 `POST /api/rewrite` 才扣次数；
+  `/api/analyze` 和规则层完全不限次。
+- **`limit` 是按当前档位算出来的，不是固定值。** 用户授权成功后，同一个 `used`
+  会立刻对应更大的 `limit`——前端不用自己算，重新调一次这个接口即可。
+- **授权后已用次数不会清零。** `QuotaUsage` 按 `openid + 日期` 记一份、**不分档位**，
+  所以「先用完 5 次再授权」拿到的是 10 − 5 = 5 次，不是 15 次。这是有意的，
+  否则「先匿名用完再登录」就成了刷额度。
+- **计数按北京时间自然日恢复。** 容器时区已在 Dockerfile 里设为 `Asia/Shanghai`。
+- **只统计 AI 深度改写**，规则层体检/秒改不计数。
+
+额度用尽时 `POST /api/rewrite` 返回 `429 / QUOTA_EXCEEDED`，文案里已经带了引导
+（未授权时提示「授权手机号后每天可用 10 次」）。
+
+#### GET /api/usage —— 账户余额 + 今日用量
+
+无上送参数。返回 `data`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `balance` | object | 账户余额，结构随 provider 不同。查询失败时**没有这个字段** |
+| `balanceError` | string | 查余额失败的原因。余额查不到**不会**让整个接口失败 |
+| `today` | object | 今日用量汇总，结构见下 |
+
+`today`（只统计当前用户自己的任务）：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `tasks` | int | 今天创建的任务数 |
+| `done` / `failed` | int | 成功 / 失败数 |
+| `promptTokens` / `completionTokens` / `cacheHitTokens` | int | token 用量 |
+| `costCNY` | float | 今日费用（元） |
+
+`balance` 随 provider：
+
+- `provider=deepseek`：`{provider, currency, totalBalance, grantedBalance, toppedUpBalance, …}`
+- `provider=openrouter`：`{provider, currency: "USD", …}`
+
+> ⚠️ 余额只保留 2 位小数，**不要用它做单次调用的费用核算**——实测一次 humanizer
+> 调用约 0.0007 元，余额上看不出变化。单次费用请看 `/api/task/<taskId>` 的
+> `usage.costCNY`。余额在这里只用于「够不够用」的粗粒度监控。
 
 #### POST /api/analyze —— 体检 + 秒改（免费）
 
@@ -407,6 +536,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 
 | 字段 | 出现时机 | 说明 |
 | --- | --- | --- |
+| `taskId` | 总是 | 任务 ID（与路径里的同一个）。前端「切后台回来续跑」只调这个接口，靠它把结果落回同一条记录 |
 | `status` | 总是 | `pending` / `running` / `done` / `failed` |
 | `rulesText` | 总是 | 规则层兜底文本 |
 | `elapsedMs` | 总是 | 已耗时（毫秒） |
@@ -447,6 +577,18 @@ other         其他
 （同一任务同一用户只保留一条，重复提交视为「改主意」）。
 
 ---
+
+#### GET /api/feedback/summary —— 我的评价统计
+
+无上送参数。**只统计当前用户自己**的评价——全局统计请直接查库，不通过公开接口暴露。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `total` | int | 总评价数 |
+| `good` / `bad` | int | 好评 / 差评数 |
+| `goodRate` | float | 好评率 0~1，保留 4 位；没有任何评价时为 `0` |
+| `badReasons` | array | `[{reason, count}]`，按数量倒序 |
+| `availableReasons` | string[] | 可选差评原因枚举，**前端应从这里读，别写死** |
 
 #### POST /api/auth/login —— 手机号授权并提升额度
 
@@ -552,6 +694,91 @@ openid，仅本地开发）。
 `/api/quota` 返回 `verified`、`anonymousLimit`、`verifiedLimit`、`phoneMasked`，
 前端据此显示「授权手机号后每天可用 10 次」的引导。未授权额度用尽时，
 `QUOTA_EXCEEDED` 的错误文案里也会带上这个引导。
+
+#### 身份头从哪来，以及怎么确认它真的来了
+
+**先记住一件事：`X-WX-*` 是平台在服务端注入的，客户端根本不发送。**
+所以在微信开发者工具的 Network 面板里**永远看不到** `X-WX-OPENID`——那里显示的
+是你发出去的请求，不是容器收到的请求。官方原文（[登录流程优化](https://developers.weixin.qq.com/miniprogram/dev/wxcloudservice/wxcloudrun/src/quickstart/plan/login.html)）：
+
+> 在小程序端，通过 `wx.cloud.callContainer` 向你的云托管服务发起请求时，
+> **你的服务会在 header 中获得该请求用户的全部信息**。
+> **不需要 `wx.login` 登录，也不需要 code 换 session**。
+> 这个能力是**不带任何条件的**，小程序只要使用 `wx.cloud.callContainer`，
+> 云托管服务收到这个请求，信息就自然而然带入进来了。
+
+要确认「到底有没有注入、值是什么」，只能从容器侧看。开启诊断接口：
+
+```bash
+# 云托管控制台 → 服务设置 → 环境变量
+DEAI_DEBUG_HEADERS=true      # 排查完立刻删掉这一行
+```
+
+重新发布版本后，在小程序里请求（或直接用 curl 打公网域名）：
+
+```bash
+curl -s https://<你的域名>/api/debug/headers | python3 -m json.tool
+```
+
+返回里关心这几个字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `identity` | 业务侧最终认到的身份。正常应是 openid；`anonymous` 说明**什么都没注入** |
+| `hasOpenid` | `X-WX-OPENID` 在不在 |
+| `hasSource` | `X-WX-SOURCE` 在不在——**这是判断「是否真的来自微信链路」的官方依据** |
+| `headers` | 实际收到的头（只列 `X-WX-*` 等已知项） |
+| `metaKeys` | Django `request.META` 里的下划线形式，用于排查「注入了但框架读不到」 |
+
+**判断方法**：
+
+- 小程序里调 → `identity` 是 openid、`hasOpenid`/`hasSource` 都是 `true` → 一切正常
+- 公网 curl 调 → 三个都是空 / `anonymous` / `false` → **也正常**，这正是调用来源的区别
+- 小程序里调却拿到 `anonymous` → 平台没注入，检查是否真的走了 `callContainer`
+  （用 `wx.request` 打公网域名**不会**带任何微信信息）
+
+> ⚠️ `X-WX-SOURCE` 的存在与否是官方指定的「是否来自微信生态端」判据。
+> 当前代码只把它写进日志、**没有强制校验**，也就是说公网直连只要自带
+> `X-WX-OPENID` 就会被当真（见「已知限制」）。
+
+#### 在环境里看请求日志
+
+上面那个诊断接口要改环境变量 + 重新发布。**更省事的办法是直接看日志**——
+`RequestLogMiddleware` 默认开着（`DEAI_LOG_REQUESTS=true`），每个请求都会打一行
+到 stdout，云托管自动采集。
+
+看日志的地方：**云托管控制台 → 服务 → 服务日志**（选对应环境和版本）。
+
+日志长这样（一个请求一行，方便 grep）：
+
+```
+[req] POST /api/rewrite -> 200 1523ms | has_openid=True has_identity=True openid=oXXXX from_openid=- appid=wxXXXX env=prod-1 source=1 | ip=1.2.3.4 | params=body={"text": "首先，我们要明确目标。", "skill": "humanizer", "mode": "general", "intensity": "medium"} | headers={"Host": "…", "X-Wx-Openid": "oXXXX", "X-Wx-Source": "1", …}
+```
+
+**怎么用它确认身份头**：在日志里搜 `has_openid`。
+
+| 你看到的 | 含义 |
+| --- | --- |
+| `has_openid=True` + `openid=oXXXX` | 平台正常注入了——**未登录也有值** |
+| `has_openid=False has_identity=False` | **什么都没注入**。如果不是公网调用，说明没走 `callContainer` |
+| `has_openid=False has_identity=True` + `from_openid=…` | 资源复用场景（环境归属另一个账号） |
+| `source=-` | 不是微信链路（`X-WX-SOURCE` 缺失） |
+
+几个实现细节，排查时用得上：
+
+- **`has_openid` 和 `has_identity` 是两个不同的东西**：前者只看 `X-WX-OPENID`，
+  后者是「两个头任一个有」。只按后者算的话，资源复用场景会打出
+  「`has_openid=True` 但 `openid=-`」这种自相矛盾的日志。
+- **中间件读 `request.body` 不会把 view 的 body 吃掉**——Django 首次访问会把原始
+  字节缓存进 `request._body`。这条有单测专门盯着，别改成 `read()`。
+- **`headers={...}` 里的名字是 Django 的写法**（`X-WX-OPENID` 显示成 `X-Wx-Openid`）。
+  header 大小写不敏感、取值不受影响；前面 `openid=` / `source=` 那段保持官方写法。
+- **`cookie` / `authorization` 永远不打**，免得以后接了鉴权把凭证写进日志。
+- **超长会截断**并标注 `…(截断，共 N 字)`，用 `DEAI_LOG_MAX_CHARS` 调。
+- **401 / 404 也会记**——排查身份问题时最该看的就是被拒的那条。
+
+> ⚠️ 它会把 **openid 和请求体原文**（用户要改写的文稿）写进日志。
+> 排查阶段开着的收益远大于成本，但**对外放开前建议设 `DEAI_LOG_REQUESTS=false`**。
 
 
 
@@ -955,6 +1182,17 @@ POST /api/rewrite
 
 ## 九、已知限制
 
+- **请求日志默认开着，会把 openid 和请求体原文写进日志**（`DEAI_LOG_REQUESTS`）。
+  这是为了让「X-WX-OPENID 到底有没有值」这类问题在一次部署内就能看清楚，
+  代价是日志里有用户标识和用户文稿。**对外放开前记得设 `false`**。
+- **`X-WX-SOURCE` 没有被强制校验**（安全相关的待办）。`deai/auth.py` 只读
+  `X-WX-OPENID` / `X-WX-FROM-OPENID`，不判断来源。官方文档说「保证调用来源是微信
+  生态端，**请判断 `X-WX-SOURCE` 头部是否存在**」，而这个头当前只进了日志。
+  影响：服务有公网域名（`https://<域名>/api/health` 用的就是它），如果平台**不剥离**
+  客户端自带的 `X-WX-*` 头，那么打公网域名并自带 `X-WX-OPENID` 就能冒充任意用户，
+  更糟的是**每次换一个假 openid 就能无限白嫖模型额度**——这恰恰是「按 openid 记额度」
+  要防的事。**尚未实测平台是否剥离该头**；彻底的做法是在云托管控制台关掉公网访问，
+  或在 `get_identity()` 里补上来源校验。
 - **容器重启会杀掉正在跑的改写线程**。任务状态已落库，超过
   `DEAI_TASK_TIMEOUT_SECONDS` 会判失败，用户重试即可。最小副本设为 0 时冷启动约几秒。
 - **多副本必须开 MySQL**，否则默认 SQLite 各副本不共享，轮询可能查不到任务。
