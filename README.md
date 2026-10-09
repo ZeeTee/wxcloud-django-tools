@@ -156,8 +156,8 @@ curl -s localhost:8080/api/count
 跑测试（**都不需要联网、不需要模型密钥**）：
 
 ```bash
-python3 -m unittest discover -s tests -t .   # 引擎 / skill / 使用次数 / 微信封装 / 请求日志单测，170 项
-python3 scripts/smoke_api.py                 # 接口端到端冒烟，101 项
+python3 -m unittest discover -s tests -t .   # 引擎 / skill / 使用次数 / 频率限制 / 微信封装 / 请求日志单测，174 项
+python3 scripts/smoke_api.py                 # 接口端到端冒烟，107 项
 python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，38 项
 ```
 
@@ -319,6 +319,8 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `DJANGO_ALLOWED_HOSTS` | `*` | 云托管 Host 不固定，默认放开 |
 | `DEAI_MAX_INPUT_CHARS` | `5000` | 单次输入上限（字）。**产品规则是多少就设多少**，前端卡住不等于后端卡住，见「已知限制」 |
 | `DEAI_DAILY_QUOTA` | `10` | **每人每天**的 AI 改写次数，按 openid 计，北京时间 0 点重置 |
+| `DEAI_REWRITE_RATE_LIMIT` | `5` | 改写接口的**频率**限制：每窗口最多几次。`0` = 关闭限流 |
+| `DEAI_REWRITE_RATE_WINDOW_SECONDS` | `60` | 上面那个窗口的长度（秒） |
 | `WX_OPENAPI_ENABLED` | `true` | 用云调用（开放接口服务）调手机号接口，**免 access_token** |
 | `WX_OPENAPI_BASE` | `http://api.weixin.qq.com` | 云调用地址，**必须 HTTP**（见下方「手机号授权」） |
 | `WX_APPID` | 空 | 小程序 AppID。**建议配**：用于校验手机号回包的 `watermark.appid` |
@@ -507,6 +509,24 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 ---
 
 #### POST /api/rewrite —— AI 深度改写（消耗次数）
+
+**两道用量闸，先频率后总量**，都返回 429：
+
+| 闸 | 配置 | 按什么算 | 被挡下的后果 |
+| --- | --- | --- | --- |
+| `RATE_LIMITED` | `DEAI_REWRITE_RATE_LIMIT` 次 / `DEAI_REWRITE_RATE_WINDOW_SECONDS` 秒（默认 5 / 60） | openid 的**滑动窗口** | 不扣每日次数，等几秒就能再来 |
+| `QUOTA_EXCEEDED` | `DEAI_DAILY_QUOTA`（默认 10） | openid 的**当天总量** | 当天不再可用 |
+
+顺序是刻意的：**被频率限制挡下的请求不扣每日次数**；而且频率检查放在参数校验
+**之后**，所以填错参数重试不会消耗限流预算。
+
+为什么要两道：每日次数管的是「总量」，管不住「速率」。没有频率限制，
+一次脚本就能在几秒内把当天 10 次全部烧掉，同时打出 10 个并发的模型调用
+（`DEAI_WORKERS` 默认才 4，会把其他用户挤在后面排队）。
+
+实现上**不需要额外建表**：每一次被接受的改写都会建一行 `deai_rewrite_task`，
+那本身就是「谁在什么时候调过」的完整记录，而且 `(openid, created_at)` 上
+本来就有索引。
 
 | 字段 | 类型 | 必填 | 取值 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -861,6 +881,7 @@ curl -s https://<你的域名>/api/debug/headers | python3 -m json.tool
 | `UNAUTHORIZED` | 401 | 拿不到调用方身份 |
 | `FORBIDDEN` | 403 | 访问他人的任务 |
 | `TASK_NOT_FOUND` | 404 | 任务不存在或已过期 |
+| `RATE_LIMITED` | 429 | 短时间调得太频繁（滑动窗口），稍等即可——**不扣**每日次数 |
 | `QUOTA_EXCEEDED` | 429 | 今日次数用完（当天不再可用） |
 | `LLM_NOT_CONFIGURED` | 503 | 服务端没配模型密钥 |
 | `INTERNAL` | 500 | 服务端异常 |
@@ -1243,6 +1264,10 @@ POST /api/rewrite
   更糟的是**每次换一个假 openid 就能无限白嫖模型调用**——这恰恰是「按 openid 记次数」
   要防的事。**尚未实测平台是否剥离该头**；彻底的做法是在云托管控制台关掉公网访问，
   或在 `get_identity()` 里补上来源校验。
+- **频率限制的窗口计数不是严格原子的**：`check_rewrite_rate()` 是「先数后放行」，
+  两个并发请求可能同时看到「还剩一个名额」。窗口只有几十秒，且每日次数仍然兜底，
+  所以刻意没有上 `select_for_update`——那会给每个改写请求加一次锁。
+  另外窗口计数直接数 `deai_rewrite_task`，**如果以后加了任务清理任务，限流会跟着失效**。
 - **容器重启会杀掉正在跑的改写线程**。任务状态已落库，超过
   `DEAI_TASK_TIMEOUT_SECONDS` 会判失败，用户重试即可。最小副本设为 0 时冷启动约几秒。
 - **多副本必须开 MySQL**，否则默认 SQLite 各副本不共享，轮询可能查不到任务。

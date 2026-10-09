@@ -385,6 +385,14 @@ def rewrite(request):
 
     立刻返回规则层结果 + taskId（因为 callContainer 上限 15 秒，等不了模型），
     前端拿到 taskId 后轮询 ``/api/task/<id>``。
+
+    两道用量闸，**先频率后总量**：
+
+    1. ``RATE_LIMITED``（429）—— ``DEAI_REWRITE_RATE_LIMIT`` 次 /
+       ``DEAI_REWRITE_RATE_WINDOW_SECONDS`` 秒的滑动窗口，按 openid 计；
+    2. ``QUOTA_EXCEEDED``（429）—— 每天的总次数。
+
+    顺序是刻意的：被频率限制挡下的请求**不扣**每日次数。
     """
     identity, err = _identity_or_error(request)
     if err:
@@ -411,6 +419,13 @@ def rewrite(request):
 
     if not is_configured():
         return fail("LLM_NOT_CONFIGURED", "服务端还没配置模型密钥，暂时无法深度改写", 503)
+
+    # 先看频率再看总量：被限流的请求不该白扣一次每日次数。
+    # 放在参数校验之后，所以填错参数重试不会消耗限流预算。
+    try:
+        quota_service.check_rewrite_rate(identity)
+    except quota_service.RateLimited as exc:
+        return fail("RATE_LIMITED", str(exc), 429)
 
     try:
         quota = quota_service.consume(identity)

@@ -32,6 +32,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "wxcloudrun.settings")
 os.environ["DJANGO_DEBUG"] = "false"
 os.environ["DEAI_ALLOW_ANONYMOUS"] = "true"
 os.environ["DEAI_DAILY_QUOTA"] = "2"  # 把次数压到 2，方便验「耗尽」
+os.environ["DEAI_REWRITE_RATE_LIMIT"] = "1000"  # 主流程先关掉限流，单独一节验它
 os.environ["LLM_API_KEY"] = "smoke-test-key-not-real"
 os.environ["LLM_BASE_URL"] = "http://127.0.0.1:9/v1"  # discard 端口，必定连不上
 os.environ["LLM_TIMEOUT"] = "2"
@@ -500,6 +501,51 @@ check(
     (r.json().get("data", {}).get("feedback") or {}).get("rating") == "good",
     r.json().get("data", {}).get("feedback"),
 )
+
+print("\n=== 6.8 改写接口的频率限制 ===")
+# 用全新 openid，窗口内计数从 0 开始，断言才确定。
+# 限流默认 5 次/60 秒，这里临时压到 2 次，少打几发。
+RATE_AUTH = {"HTTP_X_WX_OPENID": "smoke-rate-openid"}
+
+from django.conf import settings as dj_settings_rate  # noqa: E402
+
+_old_rate = dj_settings_rate.DEAI_REWRITE_RATE_LIMIT
+dj_settings_rate.DEAI_REWRITE_RATE_LIMIT = 2
+dj_settings_rate.DEAI_DAILY_QUOTA = 50  # 让每日次数远高于频率限制，避免混淆两者
+
+try:
+    # 前两次应当放行
+    for i in (1, 2):
+        r = post_json("/api/rewrite", {"text": AI_TEXT}, **RATE_AUTH)
+        check(f"窗口内第 {i} 次放行", r.status_code == 200, r.json())
+
+    used_before = client.get("/api/quota", **RATE_AUTH).json()["data"]["used"]
+
+    # 第 3 次应当被频率限制挡下
+    r = post_json("/api/rewrite", {"text": AI_TEXT}, **RATE_AUTH)
+    body = r.json()
+    check(
+        "超出频率 -> 429 RATE_LIMITED（而不是 QUOTA_EXCEEDED）",
+        r.status_code == 429 and body.get("error", {}).get("code") == "RATE_LIMITED",
+        body,
+    )
+    msg = body.get("error", {}).get("message", "")
+    check("错误文案里有「太频繁」和等待秒数", "太频繁" in msg and "秒后再试" in msg, msg)
+
+    used_after = client.get("/api/quota", **RATE_AUTH).json()["data"]["used"]
+    check(
+        "被限流的请求不扣每日次数",
+        used_before == used_after,
+        {"限流前 used": used_before, "限流后 used": used_after},
+    )
+
+    # 关掉限流应当立刻恢复
+    dj_settings_rate.DEAI_REWRITE_RATE_LIMIT = 0
+    r = post_json("/api/rewrite", {"text": AI_TEXT}, **RATE_AUTH)
+    check("DEAI_REWRITE_RATE_LIMIT=0 时关闭限流", r.status_code == 200, r.json())
+finally:
+    dj_settings_rate.DEAI_REWRITE_RATE_LIMIT = _old_rate
+    dj_settings_rate.DEAI_DAILY_QUOTA = 2
 
 print("\n=== 7. 额度耗尽 ===")
 # 注意：额度按「北京时间当天」重置。如果测试恰好跨过午夜（真的遇到过：

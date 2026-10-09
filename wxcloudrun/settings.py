@@ -181,6 +181,16 @@ DEAI_MAX_INPUT_CHARS = env_int("DEAI_MAX_INPUT_CHARS", 5000)
 #    DEAI_DAILY_LIMIT_ANONYMOUS / _VERIFIED 也一并不再使用。
 DEAI_DAILY_QUOTA = env_int("DEAI_DAILY_QUOTA", 10)
 
+# 改写接口的**频率**限制：每 WINDOW 秒最多 LIMIT 次。
+#
+# 为什么光有每日次数不够：每日次数管的是「总量」，管不住「速率」。没有它，
+# 一次脚本就能在几秒内把当天 10 次全部烧掉，同时打出 10 个并发的模型调用
+# （DEAI_WORKERS 默认才 4，会把其他用户挤在后面排队）。
+#
+# 设 LIMIT=0 表示关闭限流。滑动窗口按 openid 计，被限流的请求**不扣**每日次数。
+DEAI_REWRITE_RATE_LIMIT = env_int("DEAI_REWRITE_RATE_LIMIT", 5)
+DEAI_REWRITE_RATE_WINDOW_SECONDS = env_int("DEAI_REWRITE_RATE_WINDOW_SECONDS", 60)
+
 # --- 微信小程序身份验证（手机号授权 -> getPhoneNumber）----------------------
 # 用于「授权手机号后提升额度」。两种调用方式，见 deai/wechat.py 的模块说明：
 #

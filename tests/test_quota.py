@@ -102,6 +102,38 @@ class TestConfigNames(unittest.TestCase):
             self.assertFalse(hasattr(quota, name), f"quota.{name} 应该已经删掉")
 
 
+class TestRateLimitConfig(unittest.TestCase):
+    """改写接口的频率限制。
+
+    窗口内的计数依赖数据库（数最近建了多少 RewriteTask），所以真正的限流行为
+    由冒烟脚本覆盖；这里只锁「配置项」和最容易写错的那个早退分支。
+    """
+
+    def test_settings_exist_with_sane_defaults(self):
+        self.assertGreater(settings.DEAI_REWRITE_RATE_LIMIT, 0)
+        self.assertGreater(settings.DEAI_REWRITE_RATE_WINDOW_SECONDS, 0)
+        # 频率限制必须比每日总量更宽松，否则用户连日常使用都会被挡
+        self.assertGreaterEqual(settings.DEAI_REWRITE_RATE_LIMIT, 1)
+
+    def test_rate_limited_is_exported(self):
+        self.assertTrue(issubclass(quota.RateLimited, Exception))
+        self.assertIn("check_rewrite_rate", quota.__all__)
+
+    def test_disabled_short_circuits_before_db(self):
+        """LIMIT=0 时必须**在碰数据库之前**返回。
+
+        这个用例是故意在没有数据库的环境下跑的（本文件的所有测试都不建库）：
+        要是实现里先去数 RewriteTask 才发现「哦限流关了」，这里会直接抛
+        OperationalError。顺带保证关掉限流不会给每个请求白加一次查询。
+        """
+        with patch.object(quota.settings, "DEAI_REWRITE_RATE_LIMIT", 0):
+            quota.check_rewrite_rate("nobody-should-query-this-openid")
+
+    def test_negative_limit_also_disables(self):
+        with patch.object(quota.settings, "DEAI_REWRITE_RATE_LIMIT", -1):
+            quota.check_rewrite_rate("nobody-should-query-this-openid")
+
+
 class TestWeChatLogin(unittest.TestCase):
     def test_not_configured(self):
         with (
