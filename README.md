@@ -21,9 +21,9 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 
 **1. 加入 `deai` 应用** —— 去 AI 味的完整后端：
 
-| 能力 | 说明 | 耗时 | 消耗额度 |
+| 能力 | 说明 | 耗时 | 消耗次数 |
 | --- | --- | --- | --- |
-| AI 味体检 | 命中 300+ 条词库与 36 条结构正则，给 0-100 分、分类明细、逐条原因与建议 | 毫秒级 | 否 |
+| AI 味体检 | 命中 451 条词库与 36 条结构正则，给 0-100 分、分类明细、逐条原因与建议 | 毫秒级 | 否 |
 | 规则层改写 | 安全替换/删除高置信度的 AI 套话 | 毫秒级 | 否 |
 | AI 深度改写 | 调大模型重写全文（拆长句、调节奏、给判断） | 10-60 秒 | 每天限额 |
 
@@ -86,6 +86,7 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 │   │   ├── llm.py              OpenAI 兼容客户端（纯标准库）
 │   │   ├── prompts.py          旧版硬编码 prompt（legacy 回退用）
 │   │   ├── textutil.py         分句 / 标点清理 / 节奏统计
+│   │   ├── skill_lexicon.py    解析 skill 的禁用词表 → 标记规则（179 条）
 │   │   └── lexicon/rules.json  177 条替换 + 95 条标记 + 36 条结构正则
 │   ├── skills/                 ★ skill 子系统
 │   │   ├── registry.py         扫描并编译 skill（把「加载 references」编译成注入）
@@ -94,7 +95,7 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
 │   │       ├── SKILL.md            主提示词（与 agent 版保持一致）
 │   │       ├── skill.json          产品化清单：注入规则 / 场景 / 轮次
 │   │       ├── references/         禁用词表 · 结构清单 · 示例库
-│   │       └── overrides/          场景覆盖（general / xhs）
+│   │       └── overrides/          场景覆盖（general / xhs / academic / official）
 │   ├── views.py                10 个接口，统一响应信封
 │   ├── models.py               RewriteTask / Feedback / UserProfile / WxAccessToken / QuotaUsage
 │   ├── auth.py                 从云托管请求头取 openid
@@ -112,7 +113,8 @@ wxcloudrun/    项目配置 + 模板原有的计数器示例（保持可用）
     ├── test_skills.py          skill 编译与输出解析单测
     ├── test_skill_lexicon.py   禁用词表解析单测
     ├── test_llm_provider.py    provider 切换 / 用量解析 / 计价单测
-    ├── test_quota.py           额度双档逻辑单测
+    ├── test_quota.py           使用次数与重置时刻单测
+    ├── test_request_log.py     请求日志中间件单测（含「不能吃掉 view 的 body」）
     └── test_phone_auth.py      手机号授权报文与安全校验单测
 
 docs/                          设计依据（不是代码，但值得留档）
@@ -244,7 +246,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
    本项目无需改代码，容器启动时会自动 `migrate` 建表。
 
    **为什么建议开**：不开的话走容器内 SQLite，而 `minNum: 0` 会在 30 分钟无请求后
-   缩容到 0——容器一重启，**每日额度表就归零，配额限制形同虚设**；多副本时各副本
+   缩容到 0——容器一重启，**每日次数表就归零，限额形同虚设**；多副本时各副本
    数据还互不可见，轮询会查不到任务。
 
    想确认建表结果，可在容器内执行：`python scripts/init_db.py --check-only`
@@ -306,13 +308,16 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `LLM_MODEL` | 空 | 留空用 provider 默认模型 |
 | `LLM_TIMEOUT` | `50` | 秒，会被夹到 ≤55 |
 | `USD_CNY_RATE` | `7.2` | OpenRouter 的美元成本折算成人民币的汇率 |
+| `OPENROUTER_SITE_URL` | 空 | 可选。OpenRouter 用它做应用排名，填你的站点地址 |
+| `OPENROUTER_APP_NAME` | `deai-wechat` | 可选。同上，填应用名 |
 | `LLM_PRICE_CACHE_IN` | `0.04` | 缓存命中输入单价（元/百万 token），仅本地价格表用 |
 | `LLM_PRICE_IN` | `2.0` | 缓存未命中输入单价（元/百万 token） |
 | `LLM_PRICE_OUT` | `8.0` | 输出单价（元/百万 token） |
 | `DJANGO_SECRET_KEY` | 不安全默认值 | **生产必须换** |
 | `DJANGO_DEBUG` | `false` | |
+| `LOG_LEVEL` | `INFO` | 日志级别。所有日志都打到 stdout，云托管自动采集 |
 | `DJANGO_ALLOWED_HOSTS` | `*` | 云托管 Host 不固定，默认放开 |
-| `DEAI_MAX_INPUT_CHARS` | `5000` | 单次输入上限 |
+| `DEAI_MAX_INPUT_CHARS` | `5000` | 单次输入上限（字）。**产品规则是多少就设多少**，前端卡住不等于后端卡住，见「已知限制」 |
 | `DEAI_DAILY_QUOTA` | `10` | **每人每天**的 AI 改写次数，按 openid 计，北京时间 0 点重置 |
 | `WX_OPENAPI_ENABLED` | `true` | 用云调用（开放接口服务）调手机号接口，**免 access_token** |
 | `WX_OPENAPI_BASE` | `http://api.weixin.qq.com` | 云调用地址，**必须 HTTP**（见下方「手机号授权」） |
@@ -326,6 +331,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `DEAI_DEBUG_HEADERS` | =`DEBUG` | 开启诊断接口 `/api/debug/headers`（回显身份头）。**排查完立刻关**，它会回显 openid |
 | `DEAI_LOG_REQUESTS` | `true` | 请求日志：每个请求一行，含**全部参数 + 身份头 + 来源 IP**。对外放开前建议设 `false` |
 | `DEAI_LOG_MAX_CHARS` | `2000` | 请求日志里单个字段最多打多少字，超了截断；`0` 表示不截断 |
+| `SQLITE_PATH` | `data/deai.sqlite3` | 不配 `MYSQL_ADDRESS` 时 SQLite 文件的位置 |
 | `MYSQL_ADDRESS` | 空 | 配了用 MySQL，不配用 SQLite |
 | `MYSQL_ALLOW_57` | `false` | 允许连 MySQL 5.7（见下方说明，**建议升级而非长期开启**） |
 | `MYSQL_DATABASE` | `django_demo` | |
@@ -347,7 +353,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 
 ### 接口一览
 
-| # | 方法 | 路径 | 作用 | 上送参数 | 消耗额度 |
+| # | 方法 | 路径 | 作用 | 上送参数 | 消耗次数 |
 | --- | --- | --- | --- | --- | --- |
 | 1 | GET | `/api/health` | 部署自检：密钥是否配好、当前 provider、已加载 skill、prompt 指纹、手机号授权是否就绪 | 无 | 否 |
 | 2 | GET | `/api/skills` | 列出可用 skill 与场景/强度选项（前端据此动态渲染，别写死） | 无 | 否 |
@@ -496,11 +502,11 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `rulesText` | string | 规则层改写结果（安全替换/删除后的文本） |
 | `rulesChanges` | int | 实际改动的处数 |
 
-不调大模型、不消耗额度，**可以随便调**——前端每次输入都能实时预览。
+不调大模型、不消耗次数，**可以随便调**——前端每次输入都能实时预览。
 
 ---
 
-#### POST /api/rewrite —— AI 深度改写（消耗额度）
+#### POST /api/rewrite —— AI 深度改写（消耗次数）
 
 | 字段 | 类型 | 必填 | 取值 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -855,7 +861,7 @@ curl -s https://<你的域名>/api/debug/headers | python3 -m json.tool
 | `UNAUTHORIZED` | 401 | 拿不到调用方身份 |
 | `FORBIDDEN` | 403 | 访问他人的任务 |
 | `TASK_NOT_FOUND` | 404 | 任务不存在或已过期 |
-| `QUOTA_EXCEEDED` | 429 | 今日额度用完 |
+| `QUOTA_EXCEEDED` | 429 | 今日次数用完（当天不再可用） |
 | `LLM_NOT_CONFIGURED` | 503 | 服务端没配模型密钥 |
 | `INTERNAL` | 500 | 服务端异常 |
 
@@ -1034,14 +1040,15 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 
 ## 七、数据库表结构
 
-四张业务表（另有 Django 自带的 `django_*` / `auth_*` 表，随 `migrate` 一起建，不用管）。
+五张业务表（另有 Django 自带的 `django_*` / `auth_*` 表，随 `migrate` 一起建，不用管）。
 
 | 表 | 用途 | 关键约束 |
 | --- | --- | --- |
 | `deai_rewrite_task` | 改写任务：状态、结果、用量、费用 | 主键 `id`；索引 `(openid, created_at)` |
 | `deai_feedback` | 用户对改写结果的评价 | 唯一 `(task_id, openid)` |
-| `deai_quota_usage` | 每日免费额度计数 | 唯一 `(openid, day)` |
-| `deai_user_profile` | 用户登录状态（决定走哪档额度） | 主键 `openid` |
+| `deai_quota_usage` | 每日使用次数计数 | 唯一 `(openid, day)` |
+| `deai_user_profile` | 手机号授权记录（**不影响次数**） | 主键 `openid` |
+| `deai_wx_access_token` | 微信 access_token 缓存（仅自管 token 模式用） | 单行，固定 `id=1` |
 | `Counters` | 模板原有的计数器示例 | 主键 `id` |
 
 > **字符集必须是 `utf8mb4`**，否则 emoji 会静默变成 `?`（见第三节的踩坑记录）。
@@ -1118,9 +1125,9 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 **唯一约束 `(task_id, openid)`**：同一用户对同一任务只保留一条记录，重复提交视为
 「改主意」并覆盖（`update_or_create`），不会堆出多条自相矛盾的记录。
 
-### 7.3 `deai_quota_usage` —— 每日额度
+### 7.3 `deai_quota_usage` —— 每日使用次数
 
-规则层体检不计次，只有「AI 深度改写」才消耗额度。
+规则层体检不计次，只有「AI 深度改写」才消耗次数。
 
 | 字段 | 类型 | 取值 / 默认 | 含义 |
 | --- | --- | --- | --- |
@@ -1137,7 +1144,7 @@ DeepSeek 的 prompt 缓存，而 humanizer 的 prompt 有 15k token——缓存�
 > 代码里已经不读它们，环境变量里如果还留着会被直接忽略——建议去控制台删掉。
 
 **唯一约束 `(openid, day)`** + `F()` 原子自增，保证并发下不丢计数。
-计数用「先读后判」有极小竞争窗口（见「已知限制」），作为免费额度够用。
+计数用「先读后判」有极小竞争窗口（见「已知限制」），作为免费限额够用。
 
 > 这张表是**最不能丢**的：容器缩容重启后如果归零，配额限制就形同虚设。
 > 这也是必须用 MySQL 而不是容器内 SQLite 的主要原因。
@@ -1233,14 +1240,14 @@ POST /api/rewrite
   生态端，**请判断 `X-WX-SOURCE` 头部是否存在**」，而这个头当前只进了日志。
   影响：服务有公网域名（`https://<域名>/api/health` 用的就是它），如果平台**不剥离**
   客户端自带的 `X-WX-*` 头，那么打公网域名并自带 `X-WX-OPENID` 就能冒充任意用户，
-  更糟的是**每次换一个假 openid 就能无限白嫖模型额度**——这恰恰是「按 openid 记额度」
+  更糟的是**每次换一个假 openid 就能无限白嫖模型调用**——这恰恰是「按 openid 记次数」
   要防的事。**尚未实测平台是否剥离该头**；彻底的做法是在云托管控制台关掉公网访问，
   或在 `get_identity()` 里补上来源校验。
 - **容器重启会杀掉正在跑的改写线程**。任务状态已落库，超过
   `DEAI_TASK_TIMEOUT_SECONDS` 会判失败，用户重试即可。最小副本设为 0 时冷启动约几秒。
 - **多副本必须开 MySQL**，否则默认 SQLite 各副本不共享，轮询可能查不到任务。
-- **额度计数不是严格原子的**（`F()` 自增，但「先读后判」有极小竞争窗口）。作为免费
-  额度够用，要严格计费请换成 `select_for_update` + MySQL。
+- **次数计数不是严格原子的**（`F()` 自增，但「先读后判」有极小竞争窗口）。作为免费
+  限额够用，要严格计费请换成 `select_for_update` + MySQL。
 - **规则层改写不保证通顺**，它的定位是「兜底 + 快速见效」；真正自然还得靠大模型那层。
 - **不做流式输出**：`callContainer` 不支持 SSE，想要打字机效果得走 WebSocket
   （`connectContainer`）或自建公网域名。
@@ -1249,10 +1256,15 @@ POST /api/rewrite
 - **手机号快速验证有两个硬门槛**：①只对**非个人主体 + 已认证**的小程序开放
   （个人主体返回 `48001`）；②**每次成功调用 0.03 元**，每账号 1000 次体验额度
   （正式/体验/开发版共用），用完后要在「微信公众平台 → 付费管理」买资源包。
-  所以「授权提额度」不要设计成诱导所有人狂点，正常放一个入口即可。
-  额度不足时前端按钮回调拿到 `errno === 1400001`（不产生 code、不计费），
-  服务端侧的 `48001` 已被翻译成「该小程序没有手机号快速验证的权限
-  （需非个人主体且已认证）」。
+  既然次数已经不靠它区分，**没有真实需求就别在界面上放入口**——
+  那只会让用户白点、让项目白花钱。额度不足时前端回调拿到 `errno === 1400001`
+  （不产生 code、不计费）；服务端侧的 `48001` 已翻译成「该小程序没有手机号快速验证
+  的权限（需非个人主体且已认证）」。
+- **输入长度上限只在后端是 5000 字**（`DEAI_MAX_INPUT_CHARS`）。如果产品规则是
+  1000 字，**那只是前端在守**：改过的客户端或直接打公网域名的请求仍可送 5000 字。
+  要后端也守住，把 `DEAI_MAX_INPUT_CHARS` 设成 1000（改环境变量即可，不用重新构建）。
+  另外两边的计数口径不同：后端数 Python 码点（emoji 算 1），前端 `textarea` 的
+  `maxlength` 数 UTF-16 码元（emoji 算 2），所以前端更严、不会超。
 - **`deai_wx_access_token` 表只在自管 token 模式下有内容**。默认云调用模式下它是空表，
   容器里也不存任何微信凭证；如果开了 `WX_OPENAPI_ENABLED=false`，请确保 MySQL 可用，
   否则每次调用都要重新换 token。
