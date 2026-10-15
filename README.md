@@ -334,6 +334,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `DEAI_LOG_REQUESTS` | `true` | 请求日志：每个请求一行，含**全部参数 + 身份头 + 来源 IP**。对外放开前建议设 `false` |
 | `DEAI_LOG_MAX_CHARS` | `2000` | 请求日志里单个字段最多打多少字，超了截断；`0` 表示不截断 |
 | `SQLITE_PATH` | `data/deai.sqlite3` | 不配 `MYSQL_ADDRESS` 时 SQLite 文件的位置 |
+| `MYSQL_CONN_MAX_AGE` | `60` | 连接复用窗口（秒）。**出连接故障时可设 `0` 应急**，见「十、应急手册」 |
 | `MYSQL_ADDRESS` | 空 | 配了用 MySQL，不配用 SQLite |
 | `MYSQL_ALLOW_57` | `false` | 允许连 MySQL 5.7（见下方说明，**建议升级而非长期开启**） |
 | `MYSQL_DATABASE` | `django_demo` | |
@@ -1330,7 +1331,69 @@ POST /api/rewrite
 
 ---
 
-## 十、上游模板
+## 十、应急手册
+
+线上出问题时的第一反应清单。原则是**先恢复服务，再查原因**。
+
+### 症状：改写一直卡在 pending，最后报「改写超时了」
+
+**先确认是不是这个原因**，看服务日志里有没有这两行连在一起：
+
+```
+[ERROR] [tasks:wait] 等待任务结束时出现异常
+django.db.utils.InterfaceError: (0, '')
+```
+
+如果是——**连接被 MySQL 掐掉了**（`wait_timeout` 默认 3600 秒）。按下面的顺序处理。
+
+#### 1. 立刻恢复：重启服务版本（30 秒）
+
+云托管控制台 → 服务 → **重新发布**（或把副本数改一下触发滚动重启）。
+
+所有线程和数据库连接重建，**立刻恢复**。代价是正在跑的改写任务会丢
+（它们会走到 120 秒超时判失败），用户重试即可。
+
+> 找不到「重新发布」入口时的兜底：**随便改一个环境变量的值再保存**，
+> 一样会触发新版本部署，效果等价于重启。
+
+#### 2. 重启后还犯 → 大概率不在应用侧
+
+去 CynosDB 控制台看：连接数有没有异常增长、有没有发生主备切换 / 重启。
+应用侧已经修过一轮（`close_old_connections` + `CONN_HEALTH_CHECKS`），
+如果还犯，说明中间还有一层（比如数据库代理自己的空闲超时）。
+
+#### 3. 如果没法立刻重启：让用户重试
+
+worker 线程有 `DEAI_WORKERS`（默认 4）个，重试一次有较大概率落到健康的那个。
+这不是解法，只是拖时间。
+
+### 症状：`InterfaceError` / `OperationalError` 反复出现
+
+按这个顺序调，**都是环境变量，不用改代码**：
+
+| 顺序 | 环境变量 | 设成 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | `MYSQL_CONN_MAX_AGE` | `0` | **最直接**：用完就关，不再复用，压根没有「陈旧连接」这回事。代价是每请求多几 ms 握手 |
+| 2 | `DEAI_WORKERS` | `1` | 反直觉但有效：线程越少、复用越频繁，越不容易闲置到被服务器超时回收 |
+| 3 | MySQL 侧 `wait_timeout` | 调大 | 治标不治本，但能大幅降低发生频率（这个库现在是 3600 秒） |
+
+改完记得发布新版本才生效。
+
+### 症状：`/api/usage` 显示今日费用但模型没跑成功
+
+正常现象，不是故障：失败的任务不写 `usage`，而「模型已返回 usage、之后才失败」
+的那种调用实际计费了但库里查不到。详见第六节的说明。
+
+### 通用排查入口
+
+- **`/api/health`** —— 密钥、provider、skill、手机号能力、限额一次看全
+- **`grep '\[req\]'`** —— 每个请求一行：状态码、耗时、身份、参数
+- **`grep '\[rewrite\]'`** —— 一次改写的完整链路，用 `task=` 串起来
+- **`/api/debug/headers`** —— 临时开 `DEAI_DEBUG_HEADERS=true` 看云托管注入了哪些身份头
+
+---
+
+## 十一、上游模板
 
 - 微信云托管快速开始：<https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/basic/guide.html>
 - 本地调试指南：<https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/>

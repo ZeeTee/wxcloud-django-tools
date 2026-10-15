@@ -124,7 +124,10 @@ if MYSQL_ADDRESS:
             # 复用连接前先 ping 一下（Django 4.1+）。配合 tasks.py 里后台线程
             # 主动调的 close_old_connections()，才不会拿到被 MySQL 掐掉的死连接。
             "CONN_HEALTH_CHECKS": True,
-            "CONN_MAX_AGE": 60,
+            # 连接复用窗口。**出连接类故障（InterfaceError: (0, '')）时可以设成 0
+            # 应急**：0 = 每次用完就关，不再复用，彻底没有「陈旧连接」这回事；
+            # 代价是每个请求多一次握手（本地几 ms）。默认 60 是性能与稳妥的折中。
+            "CONN_MAX_AGE": env_int("MYSQL_CONN_MAX_AGE", 60),
         }
     }
 else:
