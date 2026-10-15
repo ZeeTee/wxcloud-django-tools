@@ -147,8 +147,31 @@ class TestRequestLogContent(unittest.TestCase):
         )
         self.assertIn("ip=1.2.3.4", text)
 
+    def test_does_not_dump_raw_headers(self):
+        """**不 dump 完整请求头**（这是明确要求过的）。
+
+        早期版本会打一份 ``headers={...}``，但它 90% 是 Host / Accept 这类噪声，
+        却把每一个未来可能带凭证的头也抄进日志。现在只留逐一挑出来的身份字段
+        和来源 IP。这条用例防的是「哪天又被加回来」。
+        """
+        text = get_logs(
+            self,
+            lambda: self.client.get(
+                GET_ENDPOINT,
+                HTTP_X_CUSTOM_TRACE="trace-should-not-appear",
+                HTTP_ACCEPT="application/json",
+                HTTP_REFERER="https://example.com/secret-path",
+            ),
+        )
+        self.assertNotIn("trace-should-not-appear", text)
+        self.assertNotIn("secret-path", text, "连 Referer 都不该出现")
+        self.assertNotIn("headers=", text, "不该有 headers= 这一段")
+
     def test_authorization_and_cookie_are_dropped(self):
-        """这两个头将来可能带凭证，绝不进日志。"""
+        """这两个头将来可能带凭证，绝不进日志。
+
+        现在整段请求头都不打了，这条更像是「万一有人把 dump 加回来」的兜底。
+        """
         text = get_logs(
             self,
             lambda: self.client.get(

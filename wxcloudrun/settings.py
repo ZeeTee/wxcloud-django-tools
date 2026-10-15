@@ -121,7 +121,13 @@ if MYSQL_ADDRESS:
             "HOST": _host,
             "PORT": _port or "3306",
             "OPTIONS": {"charset": "utf8mb4"},
-            "CONN_MAX_AGE": 60,
+            # 复用连接前先 ping 一下（Django 4.1+）。配合 tasks.py 里后台线程
+            # 主动调的 close_old_connections()，才不会拿到被 MySQL 掐掉的死连接。
+            "CONN_HEALTH_CHECKS": True,
+            # 连接复用窗口。**出连接类故障（InterfaceError: (0, '')）时可以设成 0
+            # 应急**：0 = 每次用完就关，不再复用，彻底没有「陈旧连接」这回事；
+            # 代价是每个请求多一次握手（本地几 ms）。默认 60 是性能与稳妥的折中。
+            "CONN_MAX_AGE": env_int("MYSQL_CONN_MAX_AGE", 60),
         }
     }
 else:
@@ -180,6 +186,16 @@ DEAI_MAX_INPUT_CHARS = env_int("DEAI_MAX_INPUT_CHARS", 5000)
 #    如果复用这个名字，它就会悄无声息地又生效一次。同理，曾经的两档变量
 #    DEAI_DAILY_LIMIT_ANONYMOUS / _VERIFIED 也一并不再使用。
 DEAI_DAILY_QUOTA = env_int("DEAI_DAILY_QUOTA", 10)
+
+# 改写接口的**频率**限制：每 WINDOW 秒最多 LIMIT 次。
+#
+# 为什么光有每日次数不够：每日次数管的是「总量」，管不住「速率」。没有它，
+# 一次脚本就能在几秒内把当天 10 次全部烧掉，同时打出 10 个并发的模型调用
+# （DEAI_WORKERS 默认才 4，会把其他用户挤在后面排队）。
+#
+# 设 LIMIT=0 表示关闭限流。滑动窗口按 openid 计，被限流的请求**不扣**每日次数。
+DEAI_REWRITE_RATE_LIMIT = env_int("DEAI_REWRITE_RATE_LIMIT", 5)
+DEAI_REWRITE_RATE_WINDOW_SECONDS = env_int("DEAI_REWRITE_RATE_WINDOW_SECONDS", 60)
 
 # --- 微信小程序身份验证（手机号授权 -> getPhoneNumber）----------------------
 # 用于「授权手机号后提升额度」。两种调用方式，见 deai/wechat.py 的模块说明：

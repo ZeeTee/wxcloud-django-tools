@@ -18,16 +18,17 @@
 
 日志格式（每个请求一行，方便 grep ``[req]``）::
 
-    [req] POST /api/rewrite -> 200 1523ms | has_openid=True has_identity=True openid=oXXXX appid=wxXXXX env=prod-1 source=1 | ip=1.2.3.4 | params=body={"text":"首先…"} | headers={"host":"…"}
+    [req] POST /api/rewrite -> 200 1523ms | has_openid=True has_identity=True openid=oXXXX appid=wxXXXX env=prod-1 source=1 | ip=1.2.3.4 | params=body={"text":"首先…"}
 
 两个布尔值的区别（搜「到底有没有值」时搜它们最省事）：
 
 - ``has_openid``：``X-WX-OPENID`` 在不在——直属环境的正常形态
 - ``has_identity``：``X-WX-OPENID`` 或 ``X-WX-FROM-OPENID`` 任一个有——资源复用
 
-> 注意 ``headers={...}`` 里的名字是 Django 迭代 `request.headers` 时的写法
-> （``X-WX-OPENID`` 会显示成 ``X-Wx-Openid``）。header 本身大小写不敏感，
-> 取值不受影响；上面 ``openid=``/``source=`` 那一段用的是官方原始写法。
+> **刻意不打完整的请求头。** 早期版本会 dump 一份 ``headers={...}``，但那一份里
+> 绝大多数是无用噪声（Host / Accept / User-Agent…），却把每一个未来可能带凭证的
+> 头也一并抄进了日志。现在只留下面这几个**逐一挑出来**的身份字段，
+> 以及来源 IP——够定位问题，也不给以后挖坑。
 """
 
 from __future__ import annotations
@@ -54,9 +55,6 @@ _IDENTITY_HEADERS = {
 
 # 客户端 IP。官方两篇文档写的名字不一致，两个都读；只作参考，不做安全判据。
 _IP_HEADERS = ("X-Original-Forwarded-For", "X-Forwarded-For")
-
-# 这几个头不打：cookie / 凭证是敏感信息，content-length 是噪声
-_SKIP_HEADERS = {"cookie", "authorization", "content-length"}
 
 
 def _brief(value: str, limit: int) -> str:
@@ -95,7 +93,7 @@ class RequestLogMiddleware:
         try:
             elapsed_ms = (time.monotonic() - started) * 1000
             logger.info(
-                "[req] %s %s -> %s %.0fms | %s | ip=%s | params=%s | headers=%s",
+                "[req] %s %s -> %s %.0fms | %s | ip=%s | params=%s",
                 request.method,
                 request.get_full_path(),
                 getattr(response, "status_code", "?"),
@@ -103,7 +101,6 @@ class RequestLogMiddleware:
                 self._identity(request),
                 self._ip(request),
                 params,
-                self._headers(request),
             )
         except Exception:  # noqa: BLE001
             logger.warning("[req] 组装日志失败", exc_info=True)
@@ -166,12 +163,3 @@ class RequestLogMiddleware:
                 parts.append("post=<读取失败>")
 
         return " ".join(parts) if parts else "-"
-
-    def _headers(self, request) -> str:
-        limit = settings.DEAI_LOG_MAX_CHARS
-        data = {
-            name: value
-            for name, value in request.headers.items()
-            if name.lower() not in _SKIP_HEADERS
-        }
-        return _dump(data, limit)

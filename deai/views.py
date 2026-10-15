@@ -385,6 +385,14 @@ def rewrite(request):
 
     立刻返回规则层结果 + taskId（因为 callContainer 上限 15 秒，等不了模型），
     前端拿到 taskId 后轮询 ``/api/task/<id>``。
+
+    两道用量闸，**先频率后总量**：
+
+    1. ``RATE_LIMITED``（429）—— ``DEAI_REWRITE_RATE_LIMIT`` 次 /
+       ``DEAI_REWRITE_RATE_WINDOW_SECONDS`` 秒的滑动窗口，按 openid 计；
+    2. ``QUOTA_EXCEEDED``（429）—— 每天的总次数。
+
+    顺序是刻意的：被频率限制挡下的请求**不扣**每日次数。
     """
     identity, err = _identity_or_error(request)
     if err:
@@ -410,11 +418,24 @@ def rewrite(request):
         intensity = "medium"
 
     if not is_configured():
+        logger.error(
+            "[rewrite] 拒绝(未配置) openid=%s：服务端没有模型密钥，改写不可用", identity
+        )
         return fail("LLM_NOT_CONFIGURED", "服务端还没配置模型密钥，暂时无法深度改写", 503)
+
+    # 先看频率再看总量：被限流的请求不该白扣一次每日次数。
+    # 放在参数校验之后，所以填错参数重试不会消耗限流预算。
+    try:
+        quota_service.check_rewrite_rate(identity)
+    except quota_service.RateLimited as exc:
+        # 429 光看状态码分不出是「太频繁」还是「次数用完」，所以把原因打出来
+        logger.warning("[rewrite] 拒绝(频率) openid=%s %s", identity, exc)
+        return fail("RATE_LIMITED", str(exc), 429)
 
     try:
         quota = quota_service.consume(identity)
     except quota_service.QuotaExceeded as exc:
+        logger.warning("[rewrite] 拒绝(次数) openid=%s %s", identity, exc)
         return fail("QUOTA_EXCEEDED", str(exc), 429)
 
     rules_text, hits = rewrite_by_rules(text)
@@ -433,6 +454,21 @@ def rewrite(request):
     )
     future = tasks.submit(task_id)
 
+    # 这一行是排查的主锚点：拿到 task_id 就能去串 tasks.py 的完成/失败日志，
+    # 也能对上前端报上来的问题。**不打正文**，只打字数——正文是用户的文稿。
+    logger.info(
+        "[rewrite] 建任务 task=%s openid=%s skill=%s scene=%s intensity=%s "
+        "字数=%d 规则命中=%d 剩余次数=%d",
+        task_id,
+        identity,
+        skill,
+        mode,
+        intensity,
+        len(text),
+        len(hits),
+        quota.get("remaining"),
+    )
+
     payload = {
         "taskId": task_id,
         "rulesText": rules_text,
@@ -448,10 +484,24 @@ def rewrite(request):
         task = RewriteTask.objects.filter(pk=task_id).first()
         if task is not None:
             payload.update(_task_payload(task))
+            # 「同步命中」还是「转轮询」对排查很关键：前者任务已经跑完，
+            # 后者要前端继续轮询。日志里一眼区分，省得去猜。
+            logger.info(
+                "[rewrite] 同步命中 task=%s status=%s 耗时=%sms",
+                task_id,
+                task.status,
+                task.elapsed_ms,
+            )
         else:  # 任务被清理掉了，退化成轮询
             payload["status"] = "pending"
+            logger.warning("[rewrite] 任务不见了 task=%s，退化成轮询", task_id)
     else:
         payload["status"] = "pending"
+        logger.info(
+            "[rewrite] 转轮询 task=%s：同步等满 %.1fs 仍未结束，任务在后台继续跑",
+            task_id,
+            sync_wait,
+        )
 
     return ok(payload)
 

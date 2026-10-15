@@ -156,8 +156,8 @@ curl -s localhost:8080/api/count
 跑测试（**都不需要联网、不需要模型密钥**）：
 
 ```bash
-python3 -m unittest discover -s tests -t .   # 引擎 / skill / 使用次数 / 微信封装 / 请求日志单测，170 项
-python3 scripts/smoke_api.py                 # 接口端到端冒烟，101 项
+python3 -m unittest discover -s tests -t .   # 引擎 / skill / 使用次数 / 频率限制 / 微信封装 / 请求日志单测，175 项
+python3 scripts/smoke_api.py                 # 接口端到端冒烟，113 项
 python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，38 项
 ```
 
@@ -319,6 +319,8 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `DJANGO_ALLOWED_HOSTS` | `*` | 云托管 Host 不固定，默认放开 |
 | `DEAI_MAX_INPUT_CHARS` | `5000` | 单次输入上限（字）。**产品规则是多少就设多少**，前端卡住不等于后端卡住，见「已知限制」 |
 | `DEAI_DAILY_QUOTA` | `10` | **每人每天**的 AI 改写次数，按 openid 计，北京时间 0 点重置 |
+| `DEAI_REWRITE_RATE_LIMIT` | `5` | 改写接口的**频率**限制：每窗口最多几次。`0` = 关闭限流 |
+| `DEAI_REWRITE_RATE_WINDOW_SECONDS` | `60` | 上面那个窗口的长度（秒） |
 | `WX_OPENAPI_ENABLED` | `true` | 用云调用（开放接口服务）调手机号接口，**免 access_token** |
 | `WX_OPENAPI_BASE` | `http://api.weixin.qq.com` | 云调用地址，**必须 HTTP**（见下方「手机号授权」） |
 | `WX_APPID` | 空 | 小程序 AppID。**建议配**：用于校验手机号回包的 `watermark.appid` |
@@ -332,6 +334,7 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 | `DEAI_LOG_REQUESTS` | `true` | 请求日志：每个请求一行，含**全部参数 + 身份头 + 来源 IP**。对外放开前建议设 `false` |
 | `DEAI_LOG_MAX_CHARS` | `2000` | 请求日志里单个字段最多打多少字，超了截断；`0` 表示不截断 |
 | `SQLITE_PATH` | `data/deai.sqlite3` | 不配 `MYSQL_ADDRESS` 时 SQLite 文件的位置 |
+| `MYSQL_CONN_MAX_AGE` | `60` | 连接复用窗口（秒）。**出连接故障时可设 `0` 应急**，见「十、应急手册」 |
 | `MYSQL_ADDRESS` | 空 | 配了用 MySQL，不配用 SQLite |
 | `MYSQL_ALLOW_57` | `false` | 允许连 MySQL 5.7（见下方说明，**建议升级而非长期开启**） |
 | `MYSQL_DATABASE` | `django_demo` | |
@@ -507,6 +510,24 @@ Django 从 4.2 起要求 **MySQL 8.0+**（[ticket #33718](http://code.djangoproj
 ---
 
 #### POST /api/rewrite —— AI 深度改写（消耗次数）
+
+**两道用量闸，先频率后总量**，都返回 429：
+
+| 闸 | 配置 | 按什么算 | 被挡下的后果 |
+| --- | --- | --- | --- |
+| `RATE_LIMITED` | `DEAI_REWRITE_RATE_LIMIT` 次 / `DEAI_REWRITE_RATE_WINDOW_SECONDS` 秒（默认 5 / 60） | openid 的**滑动窗口** | 不扣每日次数，等几秒就能再来 |
+| `QUOTA_EXCEEDED` | `DEAI_DAILY_QUOTA`（默认 10） | openid 的**当天总量** | 当天不再可用 |
+
+顺序是刻意的：**被频率限制挡下的请求不扣每日次数**；而且频率检查放在参数校验
+**之后**，所以填错参数重试不会消耗限流预算。
+
+为什么要两道：每日次数管的是「总量」，管不住「速率」。没有频率限制，
+一次脚本就能在几秒内把当天 10 次全部烧掉，同时打出 10 个并发的模型调用
+（`DEAI_WORKERS` 默认才 4，会把其他用户挤在后面排队）。
+
+实现上**不需要额外建表**：每一次被接受的改写都会建一行 `deai_rewrite_task`，
+那本身就是「谁在什么时候调过」的完整记录，而且 `(openid, created_at)` 上
+本来就有索引。
 
 | 字段 | 类型 | 必填 | 取值 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -765,7 +786,7 @@ curl -s https://<你的域名>/api/debug/headers | python3 -m json.tool
 日志长这样（一个请求一行，方便 grep）：
 
 ```
-[req] POST /api/rewrite -> 200 1523ms | has_openid=True has_identity=True openid=oXXXX from_openid=- appid=wxXXXX env=prod-1 source=1 | ip=1.2.3.4 | params=body={"text": "首先，我们要明确目标。", "skill": "humanizer", "mode": "general", "intensity": "medium"} | headers={"Host": "…", "X-Wx-Openid": "oXXXX", "X-Wx-Source": "1", …}
+[req] POST /api/rewrite -> 200 1523ms | has_openid=True has_identity=True openid=oXXXX from_openid=- appid=wxXXXX env=prod-1 source=1 | ip=1.2.3.4 | params=body={"text": "首先，我们要明确目标。", "skill": "humanizer", "mode": "general", "intensity": "medium"}
 ```
 
 **怎么用它确认身份头**：在日志里搜 `has_openid`。
@@ -784,11 +805,36 @@ curl -s https://<你的域名>/api/debug/headers | python3 -m json.tool
   「`has_openid=True` 但 `openid=-`」这种自相矛盾的日志。
 - **中间件读 `request.body` 不会把 view 的 body 吃掉**——Django 首次访问会把原始
   字节缓存进 `request._body`。这条有单测专门盯着，别改成 `read()`。
-- **`headers={...}` 里的名字是 Django 的写法**（`X-WX-OPENID` 显示成 `X-Wx-Openid`）。
-  header 大小写不敏感、取值不受影响；前面 `openid=` / `source=` 那段保持官方写法。
-- **`cookie` / `authorization` 永远不打**，免得以后接了鉴权把凭证写进日志。
+- **不打完整的请求头**。早期版本会 dump 一份 `headers={...}`，但它九成是
+  Host / Accept / User-Agent 这类噪声，却把每一个未来可能带凭证的头也抄进日志。
+  现在只保留**逐一挑出来**的身份字段和来源 IP——够定位问题，也不给以后挖坑。
 - **超长会截断**并标注 `…(截断，共 N 字)`，用 `DEAI_LOG_MAX_CHARS` 调。
 - **401 / 404 也会记**——排查身份问题时最该看的就是被拒的那条。
+
+#### 改写流程的日志（排查问题看这些）
+
+请求日志只告诉你「进来了什么、出去了什么」；**改写内部发生了什么**由
+`deai.views.rewrite` 和 `deai.tasks` 打出来，统一带 `[rewrite]` 前缀，
+所以排查一次改写直接 `grep '\[rewrite\]'` 或按 `task=` 过滤即可：
+
+```
+[rewrite] 建任务 task=e1319c60 openid=oXXXX skill=humanizer scene=general intensity=medium 字数=35 规则命中=5 剩余次数=1
+[rewrite] 任务 e1319c60 完成 skill=humanizer/4.1.0 protocol_ok=True tokens=15233+77 缓存命中=14592 费用≈0.002482元 耗时 1523ms
+[rewrite] 同步命中 task=e1319c60 status=done 耗时=1523ms
+```
+
+四个关键节点：
+
+| 日志 | 含义 |
+| --- | --- |
+| `建任务` | 请求通过了两道闸、任务已落库。**这一行是排查的主锚点**——拿 `task=` 去串后面的完成/失败 |
+| `拒绝(频率)` / `拒绝(次数)` | 429 的两个不同原因。光看状态码分不出是「太快」还是「用完」 |
+| `同步命中` / `转轮询` | 前者任务已跑完、结果直接返回；后者前端要继续轮询 |
+| `任务 … 完成` / `模型调用失败` | 后台线程的结果，由 `deai/tasks.py` 打 |
+
+> **日志里不打正文**：`建任务` 那行只打 `字数=`，不打用户文稿。
+> 但要注意**中间件的 `params=body={...}` 里是带正文的**——两者是有意分开的：
+> 流程日志用来长期观察，请求日志用来短期排查（所以建议排查完关掉它）。
 
 > ⚠️ 它会把 **openid 和请求体原文**（用户要改写的文稿）写进日志。
 > 排查阶段开着的收益远大于成本，但**对外放开前建议设 `DEAI_LOG_REQUESTS=false`**。
@@ -861,6 +907,7 @@ curl -s https://<你的域名>/api/debug/headers | python3 -m json.tool
 | `UNAUTHORIZED` | 401 | 拿不到调用方身份 |
 | `FORBIDDEN` | 403 | 访问他人的任务 |
 | `TASK_NOT_FOUND` | 404 | 任务不存在或已过期 |
+| `RATE_LIMITED` | 429 | 短时间调得太频繁（滑动窗口），稍等即可——**不扣**每日次数 |
 | `QUOTA_EXCEEDED` | 429 | 今日次数用完（当天不再可用） |
 | `LLM_NOT_CONFIGURED` | 503 | 服务端没配模型密钥 |
 | `INTERNAL` | 500 | 服务端异常 |
@@ -1243,8 +1290,20 @@ POST /api/rewrite
   更糟的是**每次换一个假 openid 就能无限白嫖模型调用**——这恰恰是「按 openid 记次数」
   要防的事。**尚未实测平台是否剥离该头**；彻底的做法是在云托管控制台关掉公网访问，
   或在 `get_identity()` 里补上来源校验。
+- **频率限制的窗口计数不是严格原子的**：`check_rewrite_rate()` 是「先数后放行」，
+  两个并发请求可能同时看到「还剩一个名额」。窗口只有几十秒，且每日次数仍然兜底，
+  所以刻意没有上 `select_for_update`——那会给每个改写请求加一次锁。
+  另外窗口计数直接数 `deai_rewrite_task`，**如果以后加了任务清理任务，限流会跟着失效**。
 - **容器重启会杀掉正在跑的改写线程**。任务状态已落库，超过
   `DEAI_TASK_TIMEOUT_SECONDS` 会判失败，用户重试即可。最小副本设为 0 时冷启动约几秒。
+- **后台线程必须自己管连接**（已修，但改动这块时要小心）。Django 的
+  `CONN_MAX_AGE` 只在**请求线程**靠 `request_started`/`request_finished` 信号
+  生效；`ThreadPoolExecutor` 里的 worker 线程长期存活，连接会一直留着，超过
+  MySQL 的 `wait_timeout`（CynosDB 默认 3600 秒）就被服务器掐掉，下一条 SQL
+  抛 `InterfaceError (0, '')`。
+  现在 `tasks._run()` 开头会调 `close_old_connections()`，并且整段包了兜底——
+  任何异常都会把任务标成 `failed`，不会让它卡在 pending 白等 120 秒。
+  **加新的后台线程/定时任务时，记得照做。**
 - **多副本必须开 MySQL**，否则默认 SQLite 各副本不共享，轮询可能查不到任务。
 - **次数计数不是严格原子的**（`F()` 自增，但「先读后判」有极小竞争窗口）。作为免费
   限额够用，要严格计费请换成 `select_for_update` + MySQL。
@@ -1272,7 +1331,69 @@ POST /api/rewrite
 
 ---
 
-## 十、上游模板
+## 十、应急手册
+
+线上出问题时的第一反应清单。原则是**先恢复服务，再查原因**。
+
+### 症状：改写一直卡在 pending，最后报「改写超时了」
+
+**先确认是不是这个原因**，看服务日志里有没有这两行连在一起：
+
+```
+[ERROR] [tasks:wait] 等待任务结束时出现异常
+django.db.utils.InterfaceError: (0, '')
+```
+
+如果是——**连接被 MySQL 掐掉了**（`wait_timeout` 默认 3600 秒）。按下面的顺序处理。
+
+#### 1. 立刻恢复：重启服务版本（30 秒）
+
+云托管控制台 → 服务 → **重新发布**（或把副本数改一下触发滚动重启）。
+
+所有线程和数据库连接重建，**立刻恢复**。代价是正在跑的改写任务会丢
+（它们会走到 120 秒超时判失败），用户重试即可。
+
+> 找不到「重新发布」入口时的兜底：**随便改一个环境变量的值再保存**，
+> 一样会触发新版本部署，效果等价于重启。
+
+#### 2. 重启后还犯 → 大概率不在应用侧
+
+去 CynosDB 控制台看：连接数有没有异常增长、有没有发生主备切换 / 重启。
+应用侧已经修过一轮（`close_old_connections` + `CONN_HEALTH_CHECKS`），
+如果还犯，说明中间还有一层（比如数据库代理自己的空闲超时）。
+
+#### 3. 如果没法立刻重启：让用户重试
+
+worker 线程有 `DEAI_WORKERS`（默认 4）个，重试一次有较大概率落到健康的那个。
+这不是解法，只是拖时间。
+
+### 症状：`InterfaceError` / `OperationalError` 反复出现
+
+按这个顺序调，**都是环境变量，不用改代码**：
+
+| 顺序 | 环境变量 | 设成 | 为什么 |
+| --- | --- | --- | --- |
+| 1 | `MYSQL_CONN_MAX_AGE` | `0` | **最直接**：用完就关，不再复用，压根没有「陈旧连接」这回事。代价是每请求多几 ms 握手 |
+| 2 | `DEAI_WORKERS` | `1` | 反直觉但有效：线程越少、复用越频繁，越不容易闲置到被服务器超时回收 |
+| 3 | MySQL 侧 `wait_timeout` | 调大 | 治标不治本，但能大幅降低发生频率（这个库现在是 3600 秒） |
+
+改完记得发布新版本才生效。
+
+### 症状：`/api/usage` 显示今日费用但模型没跑成功
+
+正常现象，不是故障：失败的任务不写 `usage`，而「模型已返回 usage、之后才失败」
+的那种调用实际计费了但库里查不到。详见第六节的说明。
+
+### 通用排查入口
+
+- **`/api/health`** —— 密钥、provider、skill、手机号能力、限额一次看全
+- **`grep '\[req\]'`** —— 每个请求一行：状态码、耗时、身份、参数
+- **`grep '\[rewrite\]'`** —— 一次改写的完整链路，用 `task=` 串起来
+- **`/api/debug/headers`** —— 临时开 `DEAI_DEBUG_HEADERS=true` 看云托管注入了哪些身份头
+
+---
+
+## 十一、上游模板
 
 - 微信云托管快速开始：<https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/basic/guide.html>
 - 本地调试指南：<https://developers.weixin.qq.com/miniprogram/dev/wxcloudrun/src/guide/debug/>

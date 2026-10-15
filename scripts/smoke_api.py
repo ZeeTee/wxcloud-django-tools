@@ -32,6 +32,7 @@ os.environ.setdefault("DJANGO_SETTINGS_MODULE", "wxcloudrun.settings")
 os.environ["DJANGO_DEBUG"] = "false"
 os.environ["DEAI_ALLOW_ANONYMOUS"] = "true"
 os.environ["DEAI_DAILY_QUOTA"] = "2"  # 把次数压到 2，方便验「耗尽」
+os.environ["DEAI_REWRITE_RATE_LIMIT"] = "1000"  # 主流程先关掉限流，单独一节验它
 os.environ["LLM_API_KEY"] = "smoke-test-key-not-real"
 os.environ["LLM_BASE_URL"] = "http://127.0.0.1:9/v1"  # discard 端口，必定连不上
 os.environ["LLM_TIMEOUT"] = "2"
@@ -450,6 +451,53 @@ check(
     sorted(usage.keys()),
 )
 
+print("\n=== 5.6 改写流程的日志 ===")
+# 排查线上问题时全靠这几行把整条链路串起来，所以它们的存在本身就该被盯住。
+import unittest  # noqa: E402
+
+_tc = unittest.TestCase()
+with _tc.assertLogs("deai.views", level="INFO") as cap:
+    post_json("/api/rewrite", {"text": AI_TEXT, "skill": "humanizer"}, **AUTH)
+flow = "\n".join(cap.output)
+check("建任务时打了日志（带 task_id）", "[rewrite] 建任务 task=" in flow, flow[:300])
+check(
+    "日志里有 skill / 场景 / 强度",
+    all(k in flow for k in ("skill=humanizer", "scene=", "intensity=")),
+    flow[:300],
+)
+check("日志里打了字数而不是正文", "字数=" in flow and AI_TEXT not in flow, flow[:300])
+check(
+    "同步命中或转轮询，二选一必须有一行",
+    ("[rewrite] 同步命中 task=" in flow) or ("[rewrite] 转轮询 task=" in flow),
+    flow[:300],
+)
+
+print("\n=== 5.7 后台线程的健壮性 ===")
+# 线上踩过：线程池里的连接被 MySQL 按 wait_timeout 掐掉，_run 第一条 SELECT
+# 就抛 InterfaceError，异常逃到 wait() 里被当成「已结束」，任务卡在 pending
+# 直到 120 秒超时判失败。下面锁住两处修复。
+with patch.object(deai_tasks, "close_old_connections") as cc:
+    deai_tasks._run("no-such-task-id")
+check(
+    "_run 开头会 close_old_connections（清掉被服务器掐掉的连接）",
+    cc.called,
+    cc.call_count,
+)
+
+# 让内层直接炸，验证外层会把它落到任务状态上，而不是漏给 wait()
+RewriteTask.objects.filter(pk=USAGE_TASK_ID).update(
+    status=RewriteTask.STATUS_PENDING, error=""
+)
+with patch.object(deai_tasks, "_run_inner", side_effect=RuntimeError("模拟 DB 挂了")):
+    deai_tasks._run(USAGE_TASK_ID)  # 不该抛出来
+crashed = RewriteTask.objects.get(pk=USAGE_TASK_ID)
+check(
+    "后台崩溃时任务被标记为 failed，而不是卡在 pending",
+    crashed.status == RewriteTask.STATUS_FAILED,
+    crashed.status,
+)
+check("崩溃时写入了人话错误", bool(crashed.error), crashed.error)
+
 print("\n=== 6. 任务归属 ===")
 r = client.get(f"/api/task/{task_id}", HTTP_X_WX_OPENID="someone-else")
 check("他人任务 -> 403 FORBIDDEN", r.status_code == 403 and r.json()["error"]["code"] == "FORBIDDEN", r.json())
@@ -500,6 +548,51 @@ check(
     (r.json().get("data", {}).get("feedback") or {}).get("rating") == "good",
     r.json().get("data", {}).get("feedback"),
 )
+
+print("\n=== 6.8 改写接口的频率限制 ===")
+# 用全新 openid，窗口内计数从 0 开始，断言才确定。
+# 限流默认 5 次/60 秒，这里临时压到 2 次，少打几发。
+RATE_AUTH = {"HTTP_X_WX_OPENID": "smoke-rate-openid"}
+
+from django.conf import settings as dj_settings_rate  # noqa: E402
+
+_old_rate = dj_settings_rate.DEAI_REWRITE_RATE_LIMIT
+dj_settings_rate.DEAI_REWRITE_RATE_LIMIT = 2
+dj_settings_rate.DEAI_DAILY_QUOTA = 50  # 让每日次数远高于频率限制，避免混淆两者
+
+try:
+    # 前两次应当放行
+    for i in (1, 2):
+        r = post_json("/api/rewrite", {"text": AI_TEXT}, **RATE_AUTH)
+        check(f"窗口内第 {i} 次放行", r.status_code == 200, r.json())
+
+    used_before = client.get("/api/quota", **RATE_AUTH).json()["data"]["used"]
+
+    # 第 3 次应当被频率限制挡下
+    r = post_json("/api/rewrite", {"text": AI_TEXT}, **RATE_AUTH)
+    body = r.json()
+    check(
+        "超出频率 -> 429 RATE_LIMITED（而不是 QUOTA_EXCEEDED）",
+        r.status_code == 429 and body.get("error", {}).get("code") == "RATE_LIMITED",
+        body,
+    )
+    msg = body.get("error", {}).get("message", "")
+    check("错误文案里有「太频繁」和等待秒数", "太频繁" in msg and "秒后再试" in msg, msg)
+
+    used_after = client.get("/api/quota", **RATE_AUTH).json()["data"]["used"]
+    check(
+        "被限流的请求不扣每日次数",
+        used_before == used_after,
+        {"限流前 used": used_before, "限流后 used": used_after},
+    )
+
+    # 关掉限流应当立刻恢复
+    dj_settings_rate.DEAI_REWRITE_RATE_LIMIT = 0
+    r = post_json("/api/rewrite", {"text": AI_TEXT}, **RATE_AUTH)
+    check("DEAI_REWRITE_RATE_LIMIT=0 时关闭限流", r.status_code == 200, r.json())
+finally:
+    dj_settings_rate.DEAI_REWRITE_RATE_LIMIT = _old_rate
+    dj_settings_rate.DEAI_DAILY_QUOTA = 2
 
 print("\n=== 7. 额度耗尽 ===")
 # 注意：额度按「北京时间当天」重置。如果测试恰好跨过午夜（真的遇到过：

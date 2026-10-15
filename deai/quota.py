@@ -1,4 +1,4 @@
-"""每日使用次数：**按 openid 计**，每人每天 10 次。
+"""每日使用次数与频率限制：**按 openid 计**，每人每天 10 次。
 
 规则层（体检 + 规则改写）**不计次**，因为它不花钱、毫秒级返回；
 只有调用大模型的「AI 深度改写」才消耗次数。
@@ -31,11 +31,15 @@ from django.conf import settings
 from django.db.models import F
 from django.utils import timezone
 
-from .models import QuotaUsage, UserProfile
+from .models import QuotaUsage, RewriteTask, UserProfile
 
 
 class QuotaExceeded(Exception):
     pass
+
+
+class RateLimited(Exception):
+    """短时间内请求太频繁。message 会直接展示给用户。"""
 
 
 def _today():
@@ -65,6 +69,49 @@ def daily_limit() -> int:
     悄无声息地又生效一次，正是我们刚花力气铲掉的坑。
     """
     return settings.DEAI_DAILY_QUOTA
+
+
+def check_rewrite_rate(openid: str) -> None:
+    """改写接口的滑动窗口限流。超了抛 ``RateLimited``。
+
+    为什么需要
+    ----------
+    ``consume()`` 管的是**总量**（每天 N 次），管不住**速率**。没有这个检查，
+    一次脚本就能在几秒内把当天 10 次全部烧掉，同时打出 10 个并发的模型调用
+    （``DEAI_WORKERS`` 默认才 4，会把其他用户挤在后面排队）。
+
+    为什么不用单独建表
+    ------------------
+    每一次被**接受**的改写都会建一行 ``RewriteTask``，那本身就是「谁在什么时候
+    调过」的完整记录，而且 ``(openid, created_at)`` 上本来就有索引
+    （``deai_task_openid_created_idx``）。所以直接数最近的任务就行——不建表、
+    不迁移、不需要清理任务。
+
+    调用时机
+    --------
+    必须在 ``consume()`` **之前**：被限流的请求不该白扣一次每日次数。
+    也应该在参数校验之后：用户填错参数重试不该消耗限流预算。
+    """
+    limit = settings.DEAI_REWRITE_RATE_LIMIT
+    if limit <= 0:
+        return  # 限流关掉了
+
+    window_seconds = max(1, settings.DEAI_REWRITE_RATE_WINDOW_SECONDS)
+    window = timedelta(seconds=window_seconds)
+    now = timezone.now()
+
+    # 只取 limit 条就够判断了——取多了纯属浪费
+    recent = list(
+        RewriteTask.objects.filter(openid=openid, created_at__gte=now - window)
+        .order_by("created_at")
+        .values_list("created_at", flat=True)[:limit]
+    )
+    if len(recent) < limit:
+        return
+
+    # 窗口里最早那次滑出去，就腾出一个名额
+    wait = int((recent[0] + window - now).total_seconds()) + 1
+    raise RateLimited(f"操作太频繁了，请 {max(1, wait)} 秒后再试")
 
 
 def is_verified(openid: str) -> bool:
@@ -147,6 +194,8 @@ def consume(openid: str) -> dict:
 
 __all__ = [
     "QuotaExceeded",
+    "RateLimited",
+    "check_rewrite_rate",
     "daily_limit",
     "resets_at",
     "is_verified",
