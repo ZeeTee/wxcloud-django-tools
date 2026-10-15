@@ -451,6 +451,27 @@ check(
     sorted(usage.keys()),
 )
 
+print("\n=== 5.6 改写流程的日志 ===")
+# 排查线上问题时全靠这几行把整条链路串起来，所以它们的存在本身就该被盯住。
+import unittest  # noqa: E402
+
+_tc = unittest.TestCase()
+with _tc.assertLogs("deai.views", level="INFO") as cap:
+    post_json("/api/rewrite", {"text": AI_TEXT, "skill": "humanizer"}, **AUTH)
+flow = "\n".join(cap.output)
+check("建任务时打了日志（带 task_id）", "[rewrite] 建任务 task=" in flow, flow[:300])
+check(
+    "日志里有 skill / 场景 / 强度",
+    all(k in flow for k in ("skill=humanizer", "scene=", "intensity=")),
+    flow[:300],
+)
+check("日志里打了字数而不是正文", "字数=" in flow and AI_TEXT not in flow, flow[:300])
+check(
+    "同步命中或转轮询，二选一必须有一行",
+    ("[rewrite] 同步命中 task=" in flow) or ("[rewrite] 转轮询 task=" in flow),
+    flow[:300],
+)
+
 print("\n=== 6. 任务归属 ===")
 r = client.get(f"/api/task/{task_id}", HTTP_X_WX_OPENID="someone-else")
 check("他人任务 -> 403 FORBIDDEN", r.status_code == 403 and r.json()["error"]["code"] == "FORBIDDEN", r.json())

@@ -74,10 +74,10 @@ def _run(task_id: str) -> None:
         result = llm_rewrite(task.source_text, task.mode, skill=task.skill, intensity=task.intensity)
     except LLMError as exc:
         _fail(task_id, str(exc), started)
-        logger.warning("任务 %s 模型调用失败: %s", task_id, exc)
+        logger.warning("[rewrite] 任务 %s 模型调用失败：%s", task_id, exc)
     except Exception as exc:  # noqa: BLE001 - 后台线程必须兜住所有异常
         _fail(task_id, "服务端处理失败，请稍后重试", started)
-        logger.exception("任务 %s 未预期异常: %s", task_id, exc)
+        logger.exception("[rewrite] 任务 %s 未预期异常：%s", task_id, exc)
     else:
         usage = result.get("usage")
         cost = result.get("cost") or {}
@@ -106,7 +106,8 @@ def _run(task_id: str) -> None:
             elapsed_ms=int((time.monotonic() - started) * 1000),
         )
         logger.info(
-            "任务 %s 完成，skill=%s/%s protocol_ok=%s tokens=%s+%s 缓存命中=%s 费用≈%s元 耗时 %dms",
+            "[rewrite] 任务 %s 完成 skill=%s/%s protocol_ok=%s "
+            "tokens=%s+%s 缓存命中=%s 费用≈%s元 耗时 %dms",
             task_id,
             result.get("skill"),
             result.get("skillVersion"),

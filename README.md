@@ -156,8 +156,8 @@ curl -s localhost:8080/api/count
 跑测试（**都不需要联网、不需要模型密钥**）：
 
 ```bash
-python3 -m unittest discover -s tests -t .   # 引擎 / skill / 使用次数 / 频率限制 / 微信封装 / 请求日志单测，174 项
-python3 scripts/smoke_api.py                 # 接口端到端冒烟，107 项
+python3 -m unittest discover -s tests -t .   # 引擎 / skill / 使用次数 / 频率限制 / 微信封装 / 请求日志单测，175 项
+python3 scripts/smoke_api.py                 # 接口端到端冒烟，110 项
 python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，38 项
 ```
 
@@ -785,7 +785,7 @@ curl -s https://<你的域名>/api/debug/headers | python3 -m json.tool
 日志长这样（一个请求一行，方便 grep）：
 
 ```
-[req] POST /api/rewrite -> 200 1523ms | has_openid=True has_identity=True openid=oXXXX from_openid=- appid=wxXXXX env=prod-1 source=1 | ip=1.2.3.4 | params=body={"text": "首先，我们要明确目标。", "skill": "humanizer", "mode": "general", "intensity": "medium"} | headers={"Host": "…", "X-Wx-Openid": "oXXXX", "X-Wx-Source": "1", …}
+[req] POST /api/rewrite -> 200 1523ms | has_openid=True has_identity=True openid=oXXXX from_openid=- appid=wxXXXX env=prod-1 source=1 | ip=1.2.3.4 | params=body={"text": "首先，我们要明确目标。", "skill": "humanizer", "mode": "general", "intensity": "medium"}
 ```
 
 **怎么用它确认身份头**：在日志里搜 `has_openid`。
@@ -804,11 +804,36 @@ curl -s https://<你的域名>/api/debug/headers | python3 -m json.tool
   「`has_openid=True` 但 `openid=-`」这种自相矛盾的日志。
 - **中间件读 `request.body` 不会把 view 的 body 吃掉**——Django 首次访问会把原始
   字节缓存进 `request._body`。这条有单测专门盯着，别改成 `read()`。
-- **`headers={...}` 里的名字是 Django 的写法**（`X-WX-OPENID` 显示成 `X-Wx-Openid`）。
-  header 大小写不敏感、取值不受影响；前面 `openid=` / `source=` 那段保持官方写法。
-- **`cookie` / `authorization` 永远不打**，免得以后接了鉴权把凭证写进日志。
+- **不打完整的请求头**。早期版本会 dump 一份 `headers={...}`，但它九成是
+  Host / Accept / User-Agent 这类噪声，却把每一个未来可能带凭证的头也抄进日志。
+  现在只保留**逐一挑出来**的身份字段和来源 IP——够定位问题，也不给以后挖坑。
 - **超长会截断**并标注 `…(截断，共 N 字)`，用 `DEAI_LOG_MAX_CHARS` 调。
 - **401 / 404 也会记**——排查身份问题时最该看的就是被拒的那条。
+
+#### 改写流程的日志（排查问题看这些）
+
+请求日志只告诉你「进来了什么、出去了什么」；**改写内部发生了什么**由
+`deai.views.rewrite` 和 `deai.tasks` 打出来，统一带 `[rewrite]` 前缀，
+所以排查一次改写直接 `grep '\[rewrite\]'` 或按 `task=` 过滤即可：
+
+```
+[rewrite] 建任务 task=e1319c60 openid=oXXXX skill=humanizer scene=general intensity=medium 字数=35 规则命中=5 剩余次数=1
+[rewrite] 任务 e1319c60 完成 skill=humanizer/4.1.0 protocol_ok=True tokens=15233+77 缓存命中=14592 费用≈0.002482元 耗时 1523ms
+[rewrite] 同步命中 task=e1319c60 status=done 耗时=1523ms
+```
+
+四个关键节点：
+
+| 日志 | 含义 |
+| --- | --- |
+| `建任务` | 请求通过了两道闸、任务已落库。**这一行是排查的主锚点**——拿 `task=` 去串后面的完成/失败 |
+| `拒绝(频率)` / `拒绝(次数)` | 429 的两个不同原因。光看状态码分不出是「太快」还是「用完」 |
+| `同步命中` / `转轮询` | 前者任务已跑完、结果直接返回；后者前端要继续轮询 |
+| `任务 … 完成` / `模型调用失败` | 后台线程的结果，由 `deai/tasks.py` 打 |
+
+> **日志里不打正文**：`建任务` 那行只打 `字数=`，不打用户文稿。
+> 但要注意**中间件的 `params=body={...}` 里是带正文的**——两者是有意分开的：
+> 流程日志用来长期观察，请求日志用来短期排查（所以建议排查完关掉它）。
 
 > ⚠️ 它会把 **openid 和请求体原文**（用户要改写的文稿）写进日志。
 > 排查阶段开着的收益远大于成本，但**对外放开前建议设 `DEAI_LOG_REQUESTS=false`**。
