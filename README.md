@@ -157,7 +157,7 @@ curl -s localhost:8080/api/count
 
 ```bash
 python3 -m unittest discover -s tests -t .   # 引擎 / skill / 使用次数 / 频率限制 / 微信封装 / 请求日志单测，175 项
-python3 scripts/smoke_api.py                 # 接口端到端冒烟，110 项
+python3 scripts/smoke_api.py                 # 接口端到端冒烟，113 项
 python3 scripts/check_docs.py                # 接口字段与本文档的一致性校验，38 项
 ```
 
@@ -1295,6 +1295,14 @@ POST /api/rewrite
   另外窗口计数直接数 `deai_rewrite_task`，**如果以后加了任务清理任务，限流会跟着失效**。
 - **容器重启会杀掉正在跑的改写线程**。任务状态已落库，超过
   `DEAI_TASK_TIMEOUT_SECONDS` 会判失败，用户重试即可。最小副本设为 0 时冷启动约几秒。
+- **后台线程必须自己管连接**（已修，但改动这块时要小心）。Django 的
+  `CONN_MAX_AGE` 只在**请求线程**靠 `request_started`/`request_finished` 信号
+  生效；`ThreadPoolExecutor` 里的 worker 线程长期存活，连接会一直留着，超过
+  MySQL 的 `wait_timeout`（CynosDB 默认 3600 秒）就被服务器掐掉，下一条 SQL
+  抛 `InterfaceError (0, '')`。
+  现在 `tasks._run()` 开头会调 `close_old_connections()`，并且整段包了兜底——
+  任何异常都会把任务标成 `failed`，不会让它卡在 pending 白等 120 秒。
+  **加新的后台线程/定时任务时，记得照做。**
 - **多副本必须开 MySQL**，否则默认 SQLite 各副本不共享，轮询可能查不到任务。
 - **次数计数不是严格原子的**（`F()` 自增，但「先读后判」有极小竞争窗口）。作为免费
   限额够用，要严格计费请换成 `select_for_update` + MySQL。

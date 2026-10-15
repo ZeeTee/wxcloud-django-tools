@@ -19,6 +19,7 @@ from concurrent.futures import TimeoutError as FuturesTimeout
 from decimal import Decimal
 
 from django.conf import settings
+from django.db import close_old_connections
 from django.utils import timezone
 
 from .engine import LLMError
@@ -59,7 +60,35 @@ def wait(future, timeout: float) -> bool:
 
 
 def _run(task_id: str) -> None:
+    """线程池入口。
+
+    这一层只做两件事，但都不能省：
+
+    1. **用连接前先收掉过期的**。线程池里的线程是长期存活的，而 Django 只在
+       「请求线程」的开始/结束调 ``close_old_connections()``（靠
+       ``request_started`` / ``request_finished`` 信号）。worker 线程拿不到这个
+       待遇，连接会一直留着——超过 MySQL 的 ``wait_timeout`` 就被服务器掐掉，
+       下一条 SQL 直接抛 ``InterfaceError (0, '')``。实测踩到过。
+
+    2. **兜住一切异常并落到任务状态上**。``_run_inner()`` 开头那几行 DB 访问
+       原本没有 try 保护，异常会一路逃到 ``wait()`` 里被记成「等待任务结束时
+       出现异常」然后当成「已结束」——结果任务停在 pending，要等 120 秒被
+       ``expire_stale`` 判超时，用户看到的是「改写超时了」，跟真实原因毫不相干。
+    """
+    close_old_connections()
     started = time.monotonic()
+    try:
+        _run_inner(task_id, started)
+    except Exception:  # noqa: BLE001 - 后台线程绝不能把异常漏出去
+        logger.exception("[rewrite] 任务 %s 后台执行崩溃", task_id)
+        try:
+            _fail(task_id, "服务端处理失败，请稍后重试", started)
+        except Exception:  # noqa: BLE001
+            # 连失败状态都写不进去（比如数据库彻底连不上），只能留日志
+            logger.exception("[rewrite] 任务 %s 连失败状态都写不进去", task_id)
+
+
+def _run_inner(task_id: str, started: float) -> None:
     task = (
         RewriteTask.objects.filter(pk=task_id)
         .only("id", "source_text", "mode", "skill", "intensity")

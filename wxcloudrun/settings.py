@@ -121,6 +121,9 @@ if MYSQL_ADDRESS:
             "HOST": _host,
             "PORT": _port or "3306",
             "OPTIONS": {"charset": "utf8mb4"},
+            # 复用连接前先 ping 一下（Django 4.1+）。配合 tasks.py 里后台线程
+            # 主动调的 close_old_connections()，才不会拿到被 MySQL 掐掉的死连接。
+            "CONN_HEALTH_CHECKS": True,
             "CONN_MAX_AGE": 60,
         }
     }

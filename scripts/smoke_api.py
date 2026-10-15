@@ -472,6 +472,32 @@ check(
     flow[:300],
 )
 
+print("\n=== 5.7 后台线程的健壮性 ===")
+# 线上踩过：线程池里的连接被 MySQL 按 wait_timeout 掐掉，_run 第一条 SELECT
+# 就抛 InterfaceError，异常逃到 wait() 里被当成「已结束」，任务卡在 pending
+# 直到 120 秒超时判失败。下面锁住两处修复。
+with patch.object(deai_tasks, "close_old_connections") as cc:
+    deai_tasks._run("no-such-task-id")
+check(
+    "_run 开头会 close_old_connections（清掉被服务器掐掉的连接）",
+    cc.called,
+    cc.call_count,
+)
+
+# 让内层直接炸，验证外层会把它落到任务状态上，而不是漏给 wait()
+RewriteTask.objects.filter(pk=USAGE_TASK_ID).update(
+    status=RewriteTask.STATUS_PENDING, error=""
+)
+with patch.object(deai_tasks, "_run_inner", side_effect=RuntimeError("模拟 DB 挂了")):
+    deai_tasks._run(USAGE_TASK_ID)  # 不该抛出来
+crashed = RewriteTask.objects.get(pk=USAGE_TASK_ID)
+check(
+    "后台崩溃时任务被标记为 failed，而不是卡在 pending",
+    crashed.status == RewriteTask.STATUS_FAILED,
+    crashed.status,
+)
+check("崩溃时写入了人话错误", bool(crashed.error), crashed.error)
+
 print("\n=== 6. 任务归属 ===")
 r = client.get(f"/api/task/{task_id}", HTTP_X_WX_OPENID="someone-else")
 check("他人任务 -> 403 FORBIDDEN", r.status_code == 403 and r.json()["error"]["code"] == "FORBIDDEN", r.json())
